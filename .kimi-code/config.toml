@@ -36,15 +36,15 @@ base_url = "https://api.kimi.com/coding/v1"
 [providers."managed:kimi-code".env]
 KIMI_API_KEY = "sk-xxx"   # <-- 替换为你的 Kimi API Key
 
-# 自定义代理 Provider（通过 crystallove.me 代理）
+# 自定义代理 Provider（部署你自己的 proxy，如 https://your-domain.example.com）
 # 支持审计日志、限额分配、并发控制
-# proxy key 从 https://kimi.crystallove.me 后台生成
+# proxy key 从代理后台生成
 [providers.proxy]
 type = "openai"
-base_url = "https://kimi.crystallove.me/v1"
+base_url = "https://your-proxy-domain.example.com/v1"
 
 [providers.proxy.env]
-KIMI_API_KEY = "kp-xxx"   # <-- 替换为 proxy 后台生成的 key
+PROXY_API_KEY = "kp-xxx"   # <-- 替换为 proxy 后台生成的 key
 
 
 # ==================== 模型别名 ====================
