@@ -44,7 +44,7 @@ type = "openai"
 base_url = "https://your-proxy-domain.example.com/v1"
 
 [providers.proxy.env]
-PROXY_API_KEY = "kp-xxx"   # <-- 替换为 proxy 后台生成的 key
+OPENAI_API_KEY = "kp-xxx"   # <-- 替换为 proxy 后台生成的 key（env key 名必须是 OPENAI_API_KEY）
 
 
 # ==================== 模型别名 ====================
