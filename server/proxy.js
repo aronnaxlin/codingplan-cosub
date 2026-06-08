@@ -1,5 +1,3 @@
-import { Readable } from 'node:stream'
-
 const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',
@@ -27,6 +25,30 @@ export function estimateTokens(value) {
 
 export function pickModel(body) {
   return body && typeof body === 'object' && body.model ? String(body.model) : ''
+}
+
+export function sanitizeSchema(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  if (Array.isArray(obj)) return obj.map(sanitizeSchema)
+  const result = {}
+  const hasRef = Object.prototype.hasOwnProperty.call(obj, '$ref')
+  for (const [key, value] of Object.entries(obj)) {
+    if (hasRef && key === 'description') continue
+    if (key === 'properties' && value && typeof value === 'object') {
+      const cleaned = {}
+      for (const [pk, pv] of Object.entries(value)) {
+        cleaned[pk] = sanitizeSchema(pv)
+      }
+      result[key] = cleaned
+    } else if ((key === 'items' || key === 'additionalProperties') && value && typeof value === 'object') {
+      result[key] = sanitizeSchema(value)
+    } else if (key === 'anyOf' || key === 'oneOf' || key === 'allOf') {
+      result[key] = Array.isArray(value) ? value.map(sanitizeSchema) : sanitizeSchema(value)
+    } else {
+      result[key] = value
+    }
+  }
+  return result
 }
 
 export function upstreamUrl(baseUrl, req) {
@@ -61,14 +83,17 @@ export async function pipeUpstreamResponse(upstreamResponse, res, onChunk) {
     res.end()
     return
   }
-  const stream = Readable.fromWeb(upstreamResponse.body)
-  stream.on('data', (chunk) => {
-    onChunk(chunk)
-  })
-  stream.pipe(res)
-  await new Promise((resolve, reject) => {
-    stream.on('end', resolve)
-    stream.on('error', reject)
-    res.on('close', resolve)
-  })
+  const reader = upstreamResponse.body.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      onChunk(value)
+      res.write(value)
+    }
+    res.end()
+  } catch (error) {
+    res.end()
+    throw error
+  }
 }

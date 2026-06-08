@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
 import { ConcurrencyGate, checkRollingLimits } from './limits.js'
-import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, upstreamUrl } from './proxy.js'
+import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, sanitizeSchema, upstreamUrl } from './proxy.js'
 import { fetchOfficialUsage } from './officialUsage.js'
 import { hashPassword, verifyPassword, createToken, requireAuth, requireAdmin } from './auth.js'
 
@@ -332,6 +332,19 @@ app.all('/v1/*', async (req, res) => {
       requestBody = JSON.parse(requestText)
       model = pickModel(requestBody)
       inputTokens = estimateTokens(requestBody)
+      // Kimi Anthropic-compatible endpoint does not recognize kimi-for-coding
+      if (requestBody && requestBody.model === 'kimi-for-coding') {
+        requestBody.model = 'claude-sonnet-4-6'
+      }
+      // Strip conflicting description keywords alongside $ref in tool schemas (moonshot strict check)
+      if (requestBody && Array.isArray(requestBody.tools)) {
+        for (const tool of requestBody.tools) {
+          if (tool.function && tool.function.parameters) {
+            tool.function.parameters = sanitizeSchema(tool.function.parameters)
+          }
+        }
+      }
+      requestText = JSON.stringify(requestBody)
     }
   } catch {
     requestBody = null
@@ -423,6 +436,7 @@ app.all('/v1/*', async (req, res) => {
     if (responseChunks.length) {
       try {
         const parsed = JSON.parse(Buffer.concat(responseChunks).toString('utf8'))
+        console.log('[upstream]', req.path, status, JSON.stringify(parsed).slice(0, 800))
         if (parsed.usage) {
           inputTokens = Number(parsed.usage.prompt_tokens || parsed.usage.input_tokens || inputTokens || 0)
           outputTokens = Number(parsed.usage.completion_tokens || parsed.usage.output_tokens || 0)
