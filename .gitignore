@@ -5,3 +5,4 @@ work/
 .playwright-mcp/
 .env
 .DS_Store
+outputs/
