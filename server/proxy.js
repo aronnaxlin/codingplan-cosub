@@ -32,8 +32,15 @@ export function sanitizeSchema(obj) {
   if (Array.isArray(obj)) return obj.map(sanitizeSchema)
   const result = {}
   const hasRef = Object.prototype.hasOwnProperty.call(obj, '$ref')
+
+  // Moonshot strict validator rejects any siblings alongside $ref.
+  // Keep ONLY $ref to avoid "conflicting keywords found after $ref expansion" errors.
+  if (hasRef) {
+    result['$ref'] = obj['$ref']
+    return result
+  }
+
   for (const [key, value] of Object.entries(obj)) {
-    if (hasRef && key === 'description') continue
     if (key === 'properties' && value && typeof value === 'object') {
       const cleaned = {}
       for (const [pk, pv] of Object.entries(value)) {
@@ -44,6 +51,18 @@ export function sanitizeSchema(obj) {
       result[key] = sanitizeSchema(value)
     } else if (key === 'anyOf' || key === 'oneOf' || key === 'allOf') {
       result[key] = Array.isArray(value) ? value.map(sanitizeSchema) : sanitizeSchema(value)
+    } else if ((key === 'definitions' || key === '$defs') && value && typeof value === 'object') {
+      const cleaned = {}
+      for (const [dk, dv] of Object.entries(value)) {
+        cleaned[dk] = sanitizeSchema(dv)
+      }
+      result[key] = cleaned
+    } else if (key === 'patternProperties' && value && typeof value === 'object') {
+      const cleaned = {}
+      for (const [pk, pv] of Object.entries(value)) {
+        cleaned[pk] = sanitizeSchema(pv)
+      }
+      result[key] = cleaned
     } else {
       result[key] = value
     }
@@ -52,7 +71,9 @@ export function sanitizeSchema(obj) {
 }
 
 export function upstreamUrl(baseUrl, req) {
-  const stripped = req.path.replace(/^\/v1\/?/, '')
+  // Some clients (Anthropic SDK with base URL ending in /v1) send /v1/v1/messages.
+  // Normalize both /v1/messages and /v1/v1/messages to the same upstream path.
+  const stripped = req.path.replace(/^(\/v1)+\/?/, '')
   const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
   return `${baseUrl.replace(/\/+$/, '')}/${stripped}${query}`
 }

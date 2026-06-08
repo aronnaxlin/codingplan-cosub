@@ -332,15 +332,22 @@ app.all('/v1/*', async (req, res) => {
       requestBody = JSON.parse(requestText)
       model = pickModel(requestBody)
       inputTokens = estimateTokens(requestBody)
-      // Kimi Anthropic-compatible endpoint does not recognize kimi-for-coding
-      if (requestBody && requestBody.model === 'kimi-for-coding') {
+      // Kimi Anthropic-compatible endpoint does not recognize kimi-for-coding.
+      // Only apply this mapping for the Anthropic /v1/messages path; the OpenAI
+      // /v1/chat/completions endpoint may expect kimi-for-coding natively.
+      if (requestBody && requestBody.model === 'kimi-for-coding' && req.path.startsWith('/v1/messages')) {
         requestBody.model = 'claude-sonnet-4-6'
       }
-      // Strip conflicting description keywords alongside $ref in tool schemas (moonshot strict check)
+      // Strip conflicting keywords alongside $ref in tool schemas (moonshot strict check)
       if (requestBody && Array.isArray(requestBody.tools)) {
         for (const tool of requestBody.tools) {
+          // OpenAI Chat Completions format
           if (tool.function && tool.function.parameters) {
             tool.function.parameters = sanitizeSchema(tool.function.parameters)
+          }
+          // Anthropic Messages format
+          if (tool.input_schema) {
+            tool.input_schema = sanitizeSchema(tool.input_schema)
           }
         }
       }
