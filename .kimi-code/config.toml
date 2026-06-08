@@ -1,0 +1,125 @@
+# Kimi Code CLI 项目级配置
+# 位置: .kimi-code/config.toml（项目根目录）
+# Kimi Code CLI 在项目内运行时会自动读取此配置
+# 全局个人配置位于 ~/.kimi-code/config.toml
+
+# ==================== 默认行为 ====================
+
+# 默认走代理模型；如需直连官方，临时切换: /model kimi-code/kimi-for-coding
+default_model = "proxy/kimi-for-coding"
+
+# 默认开启 Thinking（深度推理）
+default_thinking = true
+
+# 权限模式: auto = 读操作自动放行，写/执行操作仍需确认
+# 可选: manual（逐次问）/ auto / yolo（全放行）
+default_permission_mode = "auto"
+
+# 默认不进入 Plan 模式，直接进入对话
+default_plan_mode = false
+
+# 合并所有可用 Agent Skill
+merge_all_available_skills = true
+
+# 匿名遥测（帮助 Kimi 改进产品）
+telemetry = true
+
+
+# ==================== Provider 配置 ====================
+
+# Kimi 官方 Provider（用于额度检查、Thinking 原生功能等）
+# api_key 从环境变量读取，不在文件中硬编码
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+
+[providers."managed:kimi-code".env]
+KIMI_API_KEY = "sk-xxx"   # <-- 替换为你的 Kimi API Key
+
+# 自定义代理 Provider（通过 crystallove.me 代理）
+# 支持审计日志、限额分配、并发控制
+# proxy key 从 https://kimi.crystallove.me 后台生成
+[providers.proxy]
+type = "openai"
+base_url = "https://kimi.crystallove.me/v1"
+
+[providers.proxy.env]
+KIMI_API_KEY = "kp-xxx"   # <-- 替换为 proxy 后台生成的 key
+
+
+# ==================== 模型别名 ====================
+
+# 官方直连（需要原生 Kimi 功能如额度检查时临时切换）
+[models."kimi-code/kimi-for-coding"]
+provider = "managed:kimi-code"
+model = "kimi-for-coding"
+max_context_size = 262144
+
+# 通过代理（日常使用，带审计和限额）
+[models."proxy/kimi-for-coding"]
+provider = "proxy"
+model = "kimi-for-coding"
+max_context_size = 262144
+capabilities = ["thinking", "tool_use"]
+
+
+# ==================== Thinking 模式 ====================
+
+[thinking]
+mode = "auto"       # auto（模型决定）/ on（始终开）/ off（强制关）
+effort = "high"     # low / medium / high / xhigh / max
+
+
+# ==================== 循环控制 ====================
+
+[loop_control]
+max_retries_per_step = 3
+reserved_context_size = 50000
+
+
+# ==================== 后台任务 ====================
+
+[background]
+max_running_tasks = 4
+keep_alive_on_exit = false
+
+
+# ==================== 实验功能 ====================
+
+[experimental]
+goal_command = true
+micro_compaction = true
+background_ask = false
+
+
+# ==================== 权限规则 ====================
+# 按顺序匹配，第一条命中即生效
+
+[[permission.rules]]
+decision = "allow"
+pattern = "Read"
+
+[[permission.rules]]
+decision = "allow"
+pattern = "Grep"
+
+[[permission.rules]]
+decision = "allow"
+pattern = "Edit"
+
+[[permission.rules]]
+decision = "allow"
+pattern = "Write"
+
+[[permission.rules]]
+decision = "ask"
+pattern = "Bash"
+
+[[permission.rules]]
+decision = "deny"
+pattern = "Bash(rm -rf*)"
+reason = "防止递归删除根目录等危险操作"
+
+[[permission.rules]]
+decision = "ask"
+pattern = "Agent"
