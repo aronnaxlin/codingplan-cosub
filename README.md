@@ -1,6 +1,10 @@
-# Kimi Thin Proxy
+# kimi-codingplan-cosub
 
-一个面向小团队内部使用的 Kimi Code 薄代理和管理面板。它的目标是权限收敛、额度分配、并发控制和审计，不做客户端伪装，不做账号池调度。
+一个面向小团队内部使用的 Kimi Code 薄代理和管理面板。界面和部分功能来源于 [sub2api](https://github.com/Wei-Shaw/sub2api)。
+
+它的目标是权限收敛、额度分配、并发控制和审计，不做客户端伪装，不做账号池调度。
+
+> **注意：本项目尚未经过真实环境实测，仅提供一个技术方案参考。实际可用性和稳定性尚未确认。**
 
 ## 功能
 
@@ -31,7 +35,7 @@ KIMI_API_KEY=sk-your-kimi-code-key
 KIMI_UPSTREAM_BASE_URL=https://api.kimi.com/coding/v1
 GLOBAL_CONCURRENCY_LIMIT=2
 DATA_FILE=./data/store.json
-KIMI_QUOTA_USER_AGENT=KimiThinProxy/0.1 quota-check
+KIMI_QUOTA_USER_AGENT=kimi-codingplan-cosub/0.1 quota-check
 ```
 
 启动：
@@ -98,9 +102,7 @@ https://api.kimi.com/coding/v1
 
 ## 配额模型
 
-在设置页先填账号总池。项目默认使用
-[mahonzhan/awesome-coding-plan](https://github.com/mahonzhan/awesome-coding-plan)
-中整理的 Kimi Code Allegretto 估算值：
+在设置页先填账号总池。项目默认使用 [mahonzhan/awesome-coding-plan](https://github.com/mahonzhan/awesome-coding-plan) 中整理的 Kimi Code Allegretto 估算值：
 
 ```text
 5h 总请求：1,307
@@ -125,7 +127,7 @@ B：45%
 缓冲：10%
 ```
 
-人数可以自由增加，预留比例也可以在设置页调整。新建 key 会默认使用当前计算出的每人占比；已有 key 可以通过“应用到所有 Key”按钮重新分配。
+人数可以自由增加，预留比例也可以在设置页调整。新建 key 会默认使用当前计算出的每人占比；已有 key 可以通过"应用到所有 Key"按钮重新分配。
 
 如果 A 的 5h 请求上限为 `1,307 × 45% = 588` 次，A 在 5 小时滚动窗口内用到 588 次后，代理会对 A 返回 `429`，不会继续消耗上游账号。Token 上限同理。
 
@@ -141,22 +143,28 @@ Allegretto 下按 45% 计算，每人约为：
 
 ## 官方额度检查
 
-管理面板可以手动刷新 Kimi Code 官方额度。这个功能**默认关闭**，因为它会额外向 Kimi 发起一次带 `User-Agent` 的上游请求；确认接受这个风险后，在设置页打开“启用官方额度检查”再使用。
+管理面板可以手动刷新 Kimi Code 官方额度。这个功能**默认关闭**，因为它会额外向 Kimi 发起一次带 `User-Agent` 的上游请求；确认接受这个风险后，在设置页打开"启用官方额度检查"再使用。
+
+> **目前官方额度探针的可行性尚未得到确认，该功能仅作为实验性参考。**
 
 代理会请求：
 
 ```text
 GET https://api.kimi.com/coding/v1/usages
 Authorization: Bearer <KIMI_API_KEY>
-User-Agent: KimiThinProxy/0.1 quota-check
+User-Agent: kimi-codingplan-cosub/0.1 quota-check
 ```
 
 这个请求是管理端探针，不代表任何一个成员的 proxy key，也不会进入 A/B 的本地用量账本。启用后默认每 1 小时自动刷新一次，主要还是通过面板手动刷新确认。
 
 注意：该接口在开源项目中被使用，但不是 Kimi 正式承诺稳定的公开 API。如果官方拒绝当前 `User-Agent` 或权限，面板会显示 `401/403/5xx` 错误；项目不会自动伪装成 Kimi CLI。
 
-## 使用边界
+## 为什么不伪造 User-Agent
 
-这个项目不提供 `User-Agent` 伪装、随机化、统一清洗或账号池能力。代理会尽量保留客户端真实请求特征，仅做内部认证、限额、并发和审计。
+本项目**不提供** `User-Agent` 伪装、随机化、统一清洗或账号池能力。代理会尽量保留客户端真实请求特征，仅做内部认证、限额、并发和审计。
+
+关于这个决策的更多背景，请参见这个帖子：[https://x.com/Young_AGI/status/2059248586559488352](https://x.com/Young_AGI/status/2059248586559488352)
+
+## 使用边界
 
 请确认团队使用方式符合 Kimi Code 的相关规则。薄代理可以减少真实 key 泄露、误用和额度失控，但不能消除账号共享本身的规则风险。
