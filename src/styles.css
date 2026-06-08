@@ -149,6 +149,7 @@ button {
 .content {
   min-width: 0;
   padding: 26px;
+  overflow-x: hidden;
 }
 
 .topbar {
@@ -170,6 +171,7 @@ button {
   border-radius: 999px;
   font-size: 13px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .status-pill.ok,
@@ -436,33 +438,35 @@ button:disabled {
 .badge-button {
   padding: 0 10px;
   border: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .table-panel {
   overflow-x: auto;
   padding: 0;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
   width: 100%;
-  min-width: 860px;
   border-collapse: collapse;
 }
 
 th,
 td {
-  padding: 13px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid #edf0f4;
   text-align: left;
   vertical-align: middle;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 th {
   color: #667385;
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 td code,
@@ -647,6 +651,39 @@ label {
   }
 }
 
+/* Prevent long text from breaking flex/grid layouts */
+.topbar > div:first-child,
+.panel-heading > div:first-child,
+.toolbar > p:first-child {
+  min-width: 0;
+}
+
+.topbar h1,
+.panel-heading h2,
+.usage-card-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card strong,
+.official-card strong,
+.allocation-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .official-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 76px 1fr;
@@ -709,5 +746,15 @@ label {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  th,
+  td {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .content {
+    padding: 14px;
   }
 }
