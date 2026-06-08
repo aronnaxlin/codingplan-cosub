@@ -309,6 +309,10 @@ function App() {
   }
 
   async function refreshOfficialUsage() {
+    if (!settings?.quotaCheckEnabled) {
+      setNotice('官方额度检查未启用，已阻止上游请求')
+      return
+    }
     setNotice('')
     try {
       const result = await api<OfficialUsage>('/api/admin/official-usage/refresh', { method: 'POST' })
@@ -543,7 +547,7 @@ function OfficialUsagePanel({
         </button>
       </div>
       {!officialUsage ? (
-        <p className="muted-text">尚未刷新。点击手动刷新后会请求 Kimi Code `/coding/v1/usages`。</p>
+        <p className="muted-text">尚未刷新。该功能默认关闭，需在设置页启用后才会请求 Kimi Code `/coding/v1/usages`。</p>
       ) : ok ? (
         <div className="official-grid">
           <OfficialQuotaCard title="5h 窗口" quota={officialUsage.session} />
@@ -883,7 +887,7 @@ function SettingsPage({
             checked={settings.quotaCheckEnabled}
             onChange={(event) => setSettings({ ...settings, quotaCheckEnabled: event.target.checked })}
           />
-          启用每小时自动检查
+          启用官方额度检查
         </label>
         <div className="form-grid">
           <label>
@@ -904,16 +908,26 @@ function SettingsPage({
           </label>
         </div>
         <div className="preset-row">
-          <button type="button" className="ghost-button" onClick={() => void refreshOfficialUsage()}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => void refreshOfficialUsage()}
+            disabled={!settings.quotaCheckEnabled}
+          >
             <RefreshCw size={16} />
             手动刷新官方额度
           </button>
-          <button type="button" className="ghost-button" onClick={() => void syncOfficialTotals()} disabled={!officialUsage?.ok}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => void syncOfficialTotals()}
+            disabled={!settings.quotaCheckEnabled || !officialUsage?.ok}
+          >
             同步 5h/周总池
           </button>
         </div>
         <p className="muted-text">
-          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。这个请求不代表 A/B 任一 proxy key。
+          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。这个请求不代表 A/B 任一 proxy key；关闭时不会请求上游。
         </p>
         <div className="panel-heading compact-heading">
           <h2>账号总池</h2>

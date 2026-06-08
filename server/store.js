@@ -15,7 +15,7 @@ export class Store {
         upstreamBaseUrl: process.env.KIMI_UPSTREAM_BASE_URL || 'https://api.kimi.com/coding/v1',
         globalConcurrencyLimit: Number(process.env.GLOBAL_CONCURRENCY_LIMIT || 2),
         keepUsageDays: 45,
-        quotaCheckEnabled: true,
+        quotaCheckEnabled: false,
         quotaCheckIntervalMinutes: 60,
         quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
         totalFiveHourRequestLimit: 1307,

@@ -137,11 +137,24 @@ app.get('/api/admin/official-usage', requireAdmin, (_req, res) => {
 })
 
 app.post('/api/admin/official-usage/refresh', requireAdmin, async (_req, res) => {
+  if (!store.data.settings.quotaCheckEnabled) {
+    res.status(409).json({
+      ok: false,
+      status: 409,
+      error: 'official_quota_check_disabled',
+      fetchedAt: new Date().toISOString()
+    })
+    return
+  }
   const result = await refreshOfficialUsage()
   res.status(result.ok ? 200 : 502).json(result)
 })
 
 app.post('/api/admin/official-usage/sync-totals', requireAdmin, async (_req, res) => {
+  if (!store.data.settings.quotaCheckEnabled) {
+    res.status(409).json({ error: 'official_quota_check_disabled' })
+    return
+  }
   const official = store.data.officialUsage
   if (!official?.ok) {
     res.status(400).json({ error: 'official_usage_unavailable' })
