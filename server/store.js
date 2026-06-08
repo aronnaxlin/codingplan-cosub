@@ -8,6 +8,7 @@ export class Store {
   constructor(file) {
     this.file = file
     this.data = {
+      users: [],
       keys: [],
       usage: [],
       officialUsage: null,
@@ -50,6 +51,7 @@ export class Store {
   }
 
   migrate() {
+    if (!Array.isArray(this.data.users)) this.data.users = []
     this.data.settings.memberCount = Math.max(1, Number(this.data.settings.memberCount || 2))
     this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(this.data.settings.reservePercent ?? 10)))
     this.data.keys = this.data.keys.map((key) => ({
@@ -81,6 +83,68 @@ export class Store {
     return `kp_${crypto.randomBytes(24).toString('base64url')}`
   }
 
+  getUser(id) {
+    return this.data.users.find((u) => u.id === id) || null
+  }
+
+  getUserByUsername(username) {
+    return this.data.users.find((u) => u.username === username) || null
+  }
+
+  listUsers() {
+    return this.data.users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      role: u.role,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt
+    }))
+  }
+
+  async createUser(input) {
+    const record = {
+      id: crypto.randomUUID(),
+      username: String(input.username || '').trim(),
+      passwordHash: String(input.passwordHash || ''),
+      role: input.role === 'admin' ? 'admin' : 'user',
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    }
+    this.data.users.push(record)
+    await this.save()
+    return { id: record.id, username: record.username, role: record.role, createdAt: record.createdAt, updatedAt: record.updatedAt }
+  }
+
+  async updateUser(id, patch) {
+    const user = this.getUser(id)
+    if (!user) return null
+    if (Object.prototype.hasOwnProperty.call(patch, 'username')) {
+      user.username = String(patch.username || '').trim()
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'role')) {
+      user.role = patch.role === 'admin' ? 'admin' : 'user'
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'passwordHash')) {
+      user.passwordHash = String(patch.passwordHash || '')
+    }
+    user.updatedAt = nowIso()
+    await this.save()
+    return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt, updatedAt: user.updatedAt }
+  }
+
+  async deleteUser(id) {
+    const before = this.data.users.length
+    this.data.users = this.data.users.filter((u) => u.id !== id)
+    for (const key of this.data.keys) {
+      if (key.assignedToUserId === id) {
+        key.assignedToUserId = null
+        key.updatedAt = nowIso()
+      }
+    }
+    await this.save()
+    return this.data.users.length !== before
+  }
+
   publicKey(record) {
     const {
       keyHash,
@@ -95,6 +159,12 @@ export class Store {
 
   listKeys() {
     return this.data.keys.map((key) => this.publicKey(key))
+  }
+
+  listKeysForUser(userId) {
+    return this.data.keys
+      .filter((key) => key.assignedToUserId === userId)
+      .map((key) => this.publicKey(key))
   }
 
   findKeyBySecret(secret) {
@@ -120,6 +190,7 @@ export class Store {
         : this.defaultQuotaPercent(),
       concurrencyLimit: Number(input.concurrencyLimit || 1),
       notes: String(input.notes || ''),
+      assignedToUserId: input.assignedToUserId || null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
       lastUsedAt: null
@@ -137,13 +208,15 @@ export class Store {
       'active',
       'quotaPercent',
       'concurrencyLimit',
-      'notes'
+      'notes',
+      'assignedToUserId'
     ]
     for (const field of fields) {
       if (Object.prototype.hasOwnProperty.call(patch, field)) {
         if (field === 'name' || field === 'notes') key[field] = String(patch[field] ?? '')
         else if (field === 'active') key[field] = Boolean(patch[field])
         else if (field === 'quotaPercent') key[field] = Math.max(0, Math.min(100, Number(patch[field] || 0)))
+        else if (field === 'assignedToUserId') key[field] = patch[field] || null
         else key[field] = Math.max(0, Number(patch[field] || 0))
       }
     }

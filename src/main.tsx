@@ -10,6 +10,7 @@ import {
   Gauge,
   KeyRound,
   Lock,
+  LogOut,
   PauseCircle,
   Plus,
   RefreshCw,
@@ -18,11 +19,29 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
+  User,
   Users
 } from 'lucide-react'
 import './styles.css'
 
-type Page = 'dashboard' | 'keys' | 'usage' | 'settings'
+type UserRole = 'admin' | 'user'
+
+type User = {
+  id: string
+  username: string
+  role: UserRole
+  createdAt?: string
+  updatedAt?: string
+}
+
+type AuthState = {
+  token: string
+  user: User
+}
+
+type AdminPage = 'dashboard' | 'keys' | 'usage' | 'settings' | 'users'
+type UserPage = 'my-keys' | 'settings'
+type Page = AdminPage | UserPage
 
 type UsageWindow = {
   requests: number
@@ -43,6 +62,7 @@ type ProxyKey = {
   quotaPercent: number
   concurrencyLimit: number
   notes: string
+  assignedToUserId: string | null
   createdAt: string
   updatedAt: string
   lastUsedAt: string | null
@@ -143,7 +163,8 @@ const defaultKeyForm = {
   active: true,
   quotaPercent: 45,
   concurrencyLimit: 1,
-  notes: ''
+  notes: '',
+  assignedToUserId: ''
 }
 
 const quotaPresets = {
@@ -167,8 +188,19 @@ const quotaPresets = {
   }
 } as const
 
-function readAdminToken() {
-  return localStorage.getItem('kimi_proxy_admin_token') || ''
+function readAuth(): AuthState | null {
+  try {
+    const raw = localStorage.getItem('kcp_auth')
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function saveAuth(auth: AuthState | null) {
+  if (auth) localStorage.setItem('kcp_auth', JSON.stringify(auth))
+  else localStorage.removeItem('kcp_auth')
 }
 
 function fmtNumber(value: number) {
@@ -195,14 +227,88 @@ function classNames(...items: Array<string | false | undefined>) {
 }
 
 function App() {
-  const [token, setToken] = useState(readAdminToken())
-  const [tokenDraft, setTokenDraft] = useState(readAdminToken())
-  const [page, setPage] = useState<Page>('dashboard')
+  const [auth, setAuth] = useState<AuthState | null>(readAuth())
+
+  if (!auth) {
+    return <LoginPage onLogin={setAuth} />
+  }
+
+  if (auth.user.role === 'admin') {
+    return <AdminApp auth={auth} onLogout={() => { saveAuth(null); setAuth(null) }} />
+  }
+
+  return <UserApp auth={auth} onLogout={() => { saveAuth(null); setAuth(null) }} />
+}
+
+function LoginPage({ onLogin }: { onLogin: (auth: AuthState) => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || '登录失败')
+      }
+      saveAuth(data)
+      onLogin(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <form className="login-card" onSubmit={handleSubmit}>
+        <div className="brand-mark">
+          <ShieldCheck size={28} />
+        </div>
+        <h1>kimi-codingplan-cosub</h1>
+        <p>输入账号密码登录管理面板。</p>
+        {error && <div className="notice">{error}</div>}
+        <label>
+          用户名
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" required />
+        </label>
+        <label>
+          密码
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="password"
+            type="password"
+            required
+          />
+        </label>
+        <button className="primary-button" type="submit" disabled={loading}>
+          <Lock size={16} />
+          {loading ? '登录中...' : '登录'}
+        </button>
+      </form>
+    </main>
+  )
+}
+
+function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) {
+  const [page, setPage] = useState<AdminPage>('dashboard')
   const [stats, setStats] = useState<Stats | null>(null)
   const [keys, setKeys] = useState<ProxyKey[]>([])
   const [usage, setUsage] = useState<UsageEntry[]>([])
   const [settings, setSettings] = useState<SettingsState | null>(null)
   const [officialUsage, setOfficialUsage] = useState<OfficialUsage | null>(null)
+  const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
   const [newSecret, setNewSecret] = useState('')
@@ -214,7 +320,7 @@ function App() {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${auth.token}`,
         ...(init.headers || {})
       }
     })
@@ -227,21 +333,22 @@ function App() {
   }
 
   async function loadAll() {
-    if (!token) return
     setLoading(true)
     setNotice('')
     try {
-      const [nextStats, nextKeys, nextUsage, nextSettings] = await Promise.all([
+      const [nextStats, nextKeys, nextUsage, nextSettings, nextUsers] = await Promise.all([
         api<Stats>('/api/admin/stats'),
         api<ProxyKey[]>('/api/admin/keys'),
         api<UsageEntry[]>('/api/admin/usage?limit=150'),
-        api<SettingsState>('/api/admin/settings')
+        api<SettingsState>('/api/admin/settings'),
+        api<User[]>('/api/admin/users')
       ])
       setStats(nextStats)
       setKeys(nextKeys)
       setUsage(nextUsage)
       setSettings(nextSettings)
       setOfficialUsage(nextStats.officialUsage)
+      setUsers(nextUsers)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '加载失败')
     } finally {
@@ -251,26 +358,23 @@ function App() {
 
   useEffect(() => {
     void loadAll()
-  }, [token])
+  }, [auth.token])
 
   const nav = [
-    { id: 'dashboard' as Page, label: '总览', icon: BarChart3 },
-    { id: 'keys' as Page, label: 'Proxy Keys', icon: KeyRound },
-    { id: 'usage' as Page, label: '审计日志', icon: Activity },
-    { id: 'settings' as Page, label: '设置', icon: Settings }
+    { id: 'dashboard' as AdminPage, label: '总览', icon: BarChart3 },
+    { id: 'keys' as AdminPage, label: 'Proxy Keys', icon: KeyRound },
+    { id: 'usage' as AdminPage, label: '审计日志', icon: Activity },
+    { id: 'settings' as AdminPage, label: '设置', icon: Settings },
+    { id: 'users' as AdminPage, label: '用户管理', icon: Users }
   ]
-
-  function saveToken(event: FormEvent) {
-    event.preventDefault()
-    localStorage.setItem('kimi_proxy_admin_token', tokenDraft)
-    setToken(tokenDraft)
-  }
 
   async function createKey(event: FormEvent) {
     event.preventDefault()
+    const body = { ...keyForm }
+    if (!body.assignedToUserId) delete (body as any).assignedToUserId
     const created = await api<{ key: ProxyKey; secret: string }>('/api/admin/keys', {
       method: 'POST',
-      body: JSON.stringify(keyForm)
+      body: JSON.stringify(body)
     })
     setNewSecret(created.secret)
     setShowCreate(false)
@@ -347,32 +451,11 @@ function App() {
 
   const selectedTitle = useMemo(() => nav.find((item) => item.id === page)?.label || '总览', [page])
 
-  if (!token) {
-    return (
-      <main className="login-shell">
-        <form className="login-card" onSubmit={saveToken}>
-          <div className="brand-mark">
-            <ShieldCheck size={28} />
-          </div>
-          <h1>Kimi Thin Proxy</h1>
-          <p>输入服务端 `ADMIN_TOKEN` 后管理内部 proxy key、限额和审计日志。</p>
-          <label>
-            Admin Token
-            <input
-              value={tokenDraft}
-              onChange={(event) => setTokenDraft(event.target.value)}
-              placeholder="change-this-admin-token"
-              type="password"
-            />
-          </label>
-          <button className="primary-button" type="submit">
-            <Lock size={16} />
-            进入面板
-          </button>
-        </form>
-      </main>
-    )
-  }
+  const userMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const u of users) map[u.id] = u.username
+    return map
+  }, [users])
 
   return (
     <div className="app-shell">
@@ -382,7 +465,7 @@ function App() {
             <ShieldCheck size={22} />
           </div>
           <div>
-            <strong>Kimi Thin Proxy</strong>
+            <strong>kimi-codingplan-cosub</strong>
             <span>internal quota gateway</span>
           </div>
         </div>
@@ -403,9 +486,18 @@ function App() {
           })}
         </nav>
         <div className="sidebar-footer">
+          <div className="user-badge">
+            <User size={14} />
+            <span>{auth.user.username}</span>
+            <span className="role-tag">{auth.user.role}</span>
+          </div>
           <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
             <RefreshCw size={16} className={loading ? 'spin' : ''} />
             刷新
+          </button>
+          <button className="ghost-button logout-btn" onClick={onLogout}>
+            <LogOut size={14} />
+            退出
           </button>
         </div>
       </aside>
@@ -445,6 +537,8 @@ function App() {
         {page === 'keys' && (
           <KeysPage
             keys={keys}
+            users={users}
+            userMap={userMap}
             showCreate={showCreate}
             setShowCreate={setShowCreate}
             keyForm={keyForm}
@@ -466,10 +560,249 @@ function App() {
             refreshOfficialUsage={refreshOfficialUsage}
             syncOfficialTotals={syncOfficialTotals}
             applyQuotaAllocation={applyQuotaAllocation}
-            tokenDraft={tokenDraft}
-            setTokenDraft={setTokenDraft}
-            saveToken={saveToken}
           />
+        )}
+        {page === 'users' && (
+          <UsersPage users={users} keys={keys} api={api} onRefresh={loadAll} />
+        )}
+      </main>
+    </div>
+  )
+}
+
+function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) {
+  const [page, setPage] = useState<UserPage>('my-keys')
+  const [keys, setKeys] = useState<ProxyKey[]>([])
+  const [stats, setStats] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [passwordForm, setPasswordForm] = useState({ current: '', newPwd: '', confirm: '' })
+
+  async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await fetch(path, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth.token}`,
+        ...(init.headers || {})
+      }
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(text || response.statusText)
+    }
+    if (response.status === 204) return null as T
+    return response.json() as Promise<T>
+  }
+
+  async function loadAll() {
+    setLoading(true)
+    setNotice('')
+    try {
+      const [nextKeys, nextStats] = await Promise.all([
+        api<ProxyKey[]>('/api/user/keys'),
+        api<any>('/api/user/stats')
+      ])
+      setKeys(nextKeys)
+      setStats(nextStats)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadAll()
+  }, [auth.token])
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault()
+    if (passwordForm.newPwd !== passwordForm.confirm) {
+      setNotice('两次输入的新密码不一致')
+      return
+    }
+    try {
+      await api('/api/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({
+          currentPassword: passwordForm.current,
+          newPassword: passwordForm.newPwd
+        })
+      })
+      setNotice('密码修改成功')
+      setPasswordForm({ current: '', newPwd: '', confirm: '' })
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '修改失败')
+    }
+  }
+
+  const nav = [
+    { id: 'my-keys' as UserPage, label: '我的 Keys', icon: KeyRound },
+    { id: 'settings' as UserPage, label: '修改密码', icon: Lock }
+  ]
+
+  const selectedTitle = nav.find((item) => item.id === page)?.label || '我的 Keys'
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="logo-box">
+            <ShieldCheck size={22} />
+          </div>
+          <div>
+            <strong>kimi-codingplan-cosub</strong>
+            <span>用户面板</span>
+          </div>
+        </div>
+        <nav>
+          {nav.map((item) => {
+            const Icon = item.icon
+            return (
+              <button
+                key={item.id}
+                className={classNames('nav-item', page === item.id && 'active')}
+                onClick={() => setPage(item.id)}
+              >
+                <Icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+        </nav>
+        <div className="sidebar-footer">
+          <div className="user-badge">
+            <User size={14} />
+            <span>{auth.user.username}</span>
+          </div>
+          <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
+            <RefreshCw size={16} className={loading ? 'spin' : ''} />
+            刷新
+          </button>
+          <button className="ghost-button logout-btn" onClick={onLogout}>
+            <LogOut size={14} />
+            退出
+          </button>
+        </div>
+      </aside>
+
+      <main className="content">
+        <header className="topbar">
+          <div>
+            <h1>{selectedTitle}</h1>
+            <p>查看你被分配的 proxy key 和额度使用情况。</p>
+          </div>
+        </header>
+
+        {notice && <div className="notice">{notice}</div>}
+
+        {page === 'my-keys' && (
+          <section className="stack">
+            {stats && (
+              <div className="card-grid user-stats-grid">
+                <article className="metric-card">
+                  <div className="metric-icon blue">
+                    <KeyRound size={19} />
+                  </div>
+                  <div>
+                    <span>我的 Keys</span>
+                    <strong>{keys.length}</strong>
+                    <small>已分配</small>
+                  </div>
+                </article>
+                <article className="metric-card">
+                  <div className="metric-icon green">
+                    <Activity size={19} />
+                  </div>
+                  <div>
+                    <span>今日请求</span>
+                    <strong>{fmtNumber(stats.todayRequests)}</strong>
+                    <small>累计 {fmtNumber(stats.totalRequests)}</small>
+                  </div>
+                </article>
+                <article className="metric-card">
+                  <div className="metric-icon amber">
+                    <Gauge size={19} />
+                  </div>
+                  <div>
+                    <span>今日 Tokens</span>
+                    <strong>{fmtNumber(stats.todayTokens)}</strong>
+                    <small>累计 {fmtNumber(stats.totalTokens)}</small>
+                  </div>
+                </article>
+              </div>
+            )}
+            {keys.length === 0 ? (
+              <div className="panel">
+                <p className="muted-text">暂无分配给你的 proxy key。</p>
+              </div>
+            ) : (
+              <div className="key-usage-grid">
+                {keys.map((key) => (
+                  <article className="usage-card" key={key.id}>
+                    <div className="usage-card-title">
+                      <strong>{key.name}</strong>
+                      <div className="usage-card-badges">
+                        <span className="badge neutral">{key.quotaPercent}% 总池</span>
+                        <span className={classNames('badge', key.active ? 'active' : 'paused')}>
+                          {key.active ? '启用' : '暂停'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="key-preview-row">
+                      <code>{key.keyPreview}</code>
+                    </div>
+                    <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} />
+                    <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} />
+                    <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} />
+                    <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} />
+                    <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} />
+                    <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} />
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {page === 'settings' && (
+          <form className="panel form-panel" onSubmit={changePassword} style={{ maxWidth: 480 }}>
+            <div className="panel-heading">
+              <h2>修改密码</h2>
+            </div>
+            <label>
+              当前密码
+              <input
+                type="password"
+                value={passwordForm.current}
+                onChange={(e) => setPasswordForm({ ...passwordForm, current: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              新密码
+              <input
+                type="password"
+                value={passwordForm.newPwd}
+                onChange={(e) => setPasswordForm({ ...passwordForm, newPwd: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              确认新密码
+              <input
+                type="password"
+                value={passwordForm.confirm}
+                onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                required
+              />
+            </label>
+            <button className="primary-button" type="submit">
+              <Save size={16} />
+              修改密码
+            </button>
+          </form>
         )}
       </main>
     </div>
@@ -629,6 +962,8 @@ function QuotaLine({ label, used, limit }: { label: string; used: number; limit:
 
 function KeysPage(props: {
   keys: ProxyKey[]
+  users: User[]
+  userMap: Record<string, string>
   showCreate: boolean
   setShowCreate: (value: boolean) => void
   keyForm: typeof defaultKeyForm
@@ -656,6 +991,7 @@ function KeysPage(props: {
           setForm={props.setKeyForm}
           onSubmit={props.createKey}
           onCancel={() => props.setShowCreate(false)}
+          users={props.users}
         />
       )}
 
@@ -665,6 +1001,7 @@ function KeysPage(props: {
             <tr>
               <th>成员</th>
               <th>Key</th>
+              <th>分配给</th>
               <th>占总池</th>
               <th>5h 请求/Token</th>
               <th>7d 请求/Token</th>
@@ -687,6 +1024,18 @@ function KeysPage(props: {
                 </td>
                 <td>
                   <code>{key.keyPreview}</code>
+                </td>
+                <td>
+                  <select
+                    className="table-input"
+                    value={key.assignedToUserId || ''}
+                    onChange={(event) => void props.updateKey(key.id, { assignedToUserId: event.target.value || null })}
+                  >
+                    <option value="">未分配</option>
+                    {props.users.map((u) => (
+                      <option key={u.id} value={u.id}>{u.username}</option>
+                    ))}
+                  </select>
                 </td>
                 <td>
                   <input
@@ -743,25 +1092,36 @@ function KeyForm({
   form,
   setForm,
   onSubmit,
-  onCancel
+  onCancel,
+  users
 }: {
   title: string
   form: typeof defaultKeyForm
   setForm: (value: typeof defaultKeyForm) => void
   onSubmit: (event: FormEvent) => Promise<void>
   onCancel: () => void
+  users: User[]
 }) {
   const update = (patch: Partial<typeof defaultKeyForm>) => setForm({ ...form, ...patch })
   return (
     <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)}>
       <div className="panel-heading">
         <h2>{title}</h2>
-        <span>默认使用设置页的“人数 / 预留比例”计算出的每人占比。</span>
+        <span>默认使用设置页的"人数 / 预留比例"计算出的每人占比。</span>
       </div>
       <div className="form-grid">
         <label>
           名称
           <input value={form.name} onChange={(event) => update({ name: event.target.value })} required />
+        </label>
+        <label>
+          分配给普通用户
+          <select value={form.assignedToUserId} onChange={(event) => update({ assignedToUserId: event.target.value })}>
+            <option value="">未分配</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.username}</option>
+            ))}
+          </select>
         </label>
         <label>
           占总池比例 %
@@ -845,10 +1205,7 @@ function SettingsPage({
   officialUsage,
   refreshOfficialUsage,
   syncOfficialTotals,
-  applyQuotaAllocation,
-  tokenDraft,
-  setTokenDraft,
-  saveToken
+  applyQuotaAllocation
 }: {
   settings: SettingsState
   setSettings: (value: SettingsState) => void
@@ -857,9 +1214,6 @@ function SettingsPage({
   refreshOfficialUsage: () => Promise<void>
   syncOfficialTotals: () => Promise<void>
   applyQuotaAllocation: () => Promise<void>
-  tokenDraft: string
-  setTokenDraft: (value: string) => void
-  saveToken: (event: FormEvent) => void
 }) {
   const applyPreset = (preset: keyof typeof quotaPresets) => {
     const { label, ...values } = quotaPresets[preset]
@@ -1051,24 +1405,170 @@ function SettingsPage({
           保存设置
         </button>
       </form>
-      <form className="panel form-panel" onSubmit={saveToken}>
-        <div className="panel-heading">
-          <h2>本机面板 Token</h2>
-          <span>保存在浏览器 localStorage，用于调用管理接口。</span>
-        </div>
-        <label>
-          Admin Token
-          <input value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} type="password" />
-        </label>
-        <button className="ghost-button" type="submit">
-          更新本机 Token
-        </button>
-      </form>
       <article className="panel policy-panel">
         <h2>使用边界</h2>
         <p>代理会透传客户端原始 User-Agent，仅替换上游 Authorization。请把客户端 Base URL 配到：</p>
         <code>{window.location.origin}/v1</code>
       </article>
+    </section>
+  )
+}
+
+function UsersPage({
+  users,
+  keys,
+  api,
+  onRefresh
+}: {
+  users: User[]
+  keys: ProxyKey[]
+  api: <T>(path: string, init?: RequestInit) => Promise<T>
+  onRefresh: () => Promise<void>
+}) {
+  const [showCreate, setShowCreate] = useState(false)
+  const [form, setForm] = useState({ username: '', password: '', role: 'user' as UserRole })
+  const [notice, setNotice] = useState('')
+
+  async function createUser(event: FormEvent) {
+    event.preventDefault()
+    setNotice('')
+    try {
+      await api('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify(form)
+      })
+      setShowCreate(false)
+      setForm({ username: '', password: '', role: 'user' })
+      await onRefresh()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '创建失败')
+    }
+  }
+
+  async function deleteUser(id: string) {
+    if (!confirm('确认删除这个用户？其关联的 key 将变为未分配。')) return
+    try {
+      await api(`/api/admin/users/${id}`, { method: 'DELETE' })
+      await onRefresh()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '删除失败')
+    }
+  }
+
+  async function resetPassword(id: string) {
+    const newPassword = prompt('输入新密码：')
+    if (!newPassword) return
+    try {
+      await api(`/api/admin/users/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ password: newPassword })
+      })
+      await onRefresh()
+      setNotice('密码已重置')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '重置失败')
+    }
+  }
+
+  const keyCountByUser = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const key of keys) {
+      if (key.assignedToUserId) {
+        map[key.assignedToUserId] = (map[key.assignedToUserId] || 0) + 1
+      }
+    }
+    return map
+  }, [keys])
+
+  return (
+    <section className="stack">
+      <div className="toolbar">
+        <p>管理普通用户和管理员。创建后把账号密码发给对应成员。</p>
+        <button className="primary-button" onClick={() => setShowCreate(true)}>
+          <Plus size={16} />
+          新建用户
+        </button>
+      </div>
+
+      {notice && <div className="notice">{notice}</div>}
+
+      {showCreate && (
+        <form className="panel form-panel" onSubmit={(event) => void createUser(event)}>
+          <div className="panel-heading">
+            <h2>新建用户</h2>
+          </div>
+          <div className="form-grid">
+            <label>
+              用户名
+              <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
+            </label>
+            <label>
+              密码
+              <input
+                type="text"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              角色
+              <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}>
+                <option value="user">普通用户</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+          </div>
+          <div className="form-actions">
+            <button type="button" className="ghost-button" onClick={() => setShowCreate(false)}>
+              取消
+            </button>
+            <button className="primary-button" type="submit">
+              <Save size={16} />
+              创建
+            </button>
+          </div>
+        </form>
+      )}
+
+      <section className="panel table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>用户名</th>
+              <th>角色</th>
+              <th>分配 Key 数</th>
+              <th>创建时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td><strong>{u.username}</strong></td>
+                <td>
+                  <span className={classNames('badge', u.role === 'admin' ? 'active' : 'neutral')}>
+                    {u.role === 'admin' ? '管理员' : '普通用户'}
+                  </span>
+                </td>
+                <td>{keyCountByUser[u.id] || 0}</td>
+                <td>{fmtDate(u.createdAt)}</td>
+                <td>
+                  <div className="row-actions">
+                    <button className="ghost-button" onClick={() => resetPassword(u.id)} title="重置密码">
+                      <Lock size={14} />
+                      重置密码
+                    </button>
+                    <button className="icon-button danger" onClick={() => deleteUser(u.id)} title="删除">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
     </section>
   )
 }
