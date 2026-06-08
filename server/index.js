@@ -55,7 +55,7 @@ function dashboardStats() {
     concurrency: gate.snapshot(),
     hasUpstreamKey: Boolean(upstreamKey),
     officialUsage: store.data.officialUsage,
-    settings: store.data.settings
+    settings: { ...store.data.settings, defaultQuotaPercent: store.defaultQuotaPercent() }
   }
 }
 
@@ -69,7 +69,7 @@ async function refreshOfficialUsage() {
 }
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, hasUpstreamKey: Boolean(upstreamKey), settings: store.data.settings })
+  res.json({ ok: true, hasUpstreamKey: Boolean(upstreamKey), defaultQuotaPercent: store.defaultQuotaPercent(), settings: store.data.settings })
 })
 
 app.get('/api/admin/stats', requireAdmin, (_req, res) => {
@@ -118,12 +118,17 @@ app.get('/api/admin/usage', requireAdmin, (req, res) => {
 })
 
 app.get('/api/admin/settings', requireAdmin, (_req, res) => {
-  res.json({ ...store.data.settings, hasUpstreamKey: Boolean(upstreamKey) })
+  res.json({ ...store.data.settings, defaultQuotaPercent: store.defaultQuotaPercent(), hasUpstreamKey: Boolean(upstreamKey) })
 })
 
 app.patch('/api/admin/settings', requireAdmin, async (req, res) => {
   const settings = await store.updateSettings(req.body || {})
-  res.json({ ...settings, hasUpstreamKey: Boolean(upstreamKey) })
+  res.json({ ...settings, defaultQuotaPercent: store.defaultQuotaPercent(), hasUpstreamKey: Boolean(upstreamKey) })
+})
+
+app.post('/api/admin/quota-allocation/apply', requireAdmin, async (_req, res) => {
+  const result = await store.applyQuotaAllocation()
+  res.json(result)
 })
 
 app.get('/api/admin/official-usage', requireAdmin, (_req, res) => {
@@ -165,7 +170,7 @@ app.post('/api/admin/official-usage/sync-totals', requireAdmin, async (_req, res
   if (official.session?.limit) patch.totalFiveHourRequestLimit = official.session.limit
   if (official.weekly?.limit) patch.totalWeeklyRequestLimit = official.weekly.limit
   const settings = await store.updateSettings(patch)
-  res.json({ ...settings, applied: patch })
+  res.json({ ...settings, defaultQuotaPercent: store.defaultQuotaPercent(), applied: patch })
 })
 
 app.use('/v1', express.raw({ type: '*/*', limit: '50mb' }))

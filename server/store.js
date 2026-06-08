@@ -18,6 +18,8 @@ export class Store {
         quotaCheckEnabled: false,
         quotaCheckIntervalMinutes: 60,
         quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
+        memberCount: 2,
+        reservePercent: 10,
         totalFiveHourRequestLimit: 1307,
         totalWeeklyRequestLimit: 9073,
         totalMonthlyRequestLimit: 36292,
@@ -48,10 +50,18 @@ export class Store {
   }
 
   migrate() {
+    this.data.settings.memberCount = Math.max(1, Number(this.data.settings.memberCount || 2))
+    this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(this.data.settings.reservePercent ?? 10)))
     this.data.keys = this.data.keys.map((key) => ({
-      quotaPercent: 45,
+      quotaPercent: this.defaultQuotaPercent(),
       ...key
     }))
+  }
+
+  defaultQuotaPercent() {
+    const memberCount = Math.max(1, Number(this.data.settings.memberCount || 2))
+    const reservePercent = Math.max(0, Math.min(100, Number(this.data.settings.reservePercent ?? 10)))
+    return Math.round(((100 - reservePercent) / memberCount) * 100) / 100
   }
 
   async save() {
@@ -105,7 +115,9 @@ export class Store {
       keyHash: this.hashKey(secret),
       keyPreview: `${secret.slice(0, 7)}...${secret.slice(-4)}`,
       active: input.active !== false,
-      quotaPercent: Number(input.quotaPercent || 45),
+      quotaPercent: Object.prototype.hasOwnProperty.call(input, 'quotaPercent')
+        ? Math.max(0, Math.min(100, Number(input.quotaPercent || 0)))
+        : this.defaultQuotaPercent(),
       concurrencyLimit: Number(input.concurrencyLimit || 1),
       notes: String(input.notes || ''),
       createdAt: nowIso(),
@@ -266,6 +278,12 @@ export class Store {
     if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckUserAgent')) {
       this.data.settings.quotaCheckUserAgent = String(patch.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check')
     }
+    if (Object.prototype.hasOwnProperty.call(patch, 'memberCount')) {
+      this.data.settings.memberCount = Math.max(1, Number(patch.memberCount || 1))
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'reservePercent')) {
+      this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(patch.reservePercent ?? 10)))
+    }
     const numericSettings = [
       'totalFiveHourRequestLimit',
       'totalWeeklyRequestLimit',
@@ -281,5 +299,19 @@ export class Store {
     }
     await this.save()
     return this.data.settings
+  }
+
+  async applyQuotaAllocation() {
+    const quotaPercent = this.defaultQuotaPercent()
+    this.data.keys = this.data.keys.map((key) => ({
+      ...key,
+      quotaPercent,
+      updatedAt: nowIso()
+    }))
+    await this.save()
+    return {
+      quotaPercent,
+      keys: this.listKeys()
+    }
   }
 }

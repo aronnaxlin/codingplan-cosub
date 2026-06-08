@@ -105,6 +105,9 @@ type SettingsState = {
   quotaCheckEnabled: boolean
   quotaCheckIntervalMinutes: number
   quotaCheckUserAgent: string
+  memberCount: number
+  reservePercent: number
+  defaultQuotaPercent: number
   totalFiveHourRequestLimit: number
   totalWeeklyRequestLimit: number
   totalMonthlyRequestLimit: number
@@ -329,6 +332,19 @@ function App() {
     await loadAll()
   }
 
+  async function applyQuotaAllocation() {
+    await api('/api/admin/quota-allocation/apply', { method: 'POST' })
+    await loadAll()
+  }
+
+  function openCreateKeyForm() {
+    setKeyForm({
+      ...defaultKeyForm,
+      quotaPercent: settings?.defaultQuotaPercent ?? 45
+    })
+    setShowCreate(true)
+  }
+
   const selectedTitle = useMemo(() => nav.find((item) => item.id === page)?.label || '总览', [page])
 
   if (!token) {
@@ -437,6 +453,7 @@ function App() {
             updateKey={updateKey}
             rotateKey={rotateKey}
             deleteKey={deleteKey}
+            openCreateKeyForm={openCreateKeyForm}
           />
         )}
         {page === 'usage' && <UsagePage usage={usage} />}
@@ -448,6 +465,7 @@ function App() {
             officialUsage={officialUsage}
             refreshOfficialUsage={refreshOfficialUsage}
             syncOfficialTotals={syncOfficialTotals}
+            applyQuotaAllocation={applyQuotaAllocation}
             tokenDraft={tokenDraft}
             setTokenDraft={setTokenDraft}
             saveToken={saveToken}
@@ -498,7 +516,7 @@ function Dashboard({
       <section className="panel">
         <div className="panel-heading">
           <h2>成员窗口使用</h2>
-          <span>每个 key 按总池的 45% 这类比例计算硬上限</span>
+          <span>默认每人 {(stats.settings.defaultQuotaPercent ?? 45).toFixed(2)}%，预留 {stats.settings.reservePercent ?? 10}%</span>
         </div>
         <div className="key-usage-grid">
           {keys.map((key) => (
@@ -619,12 +637,13 @@ function KeysPage(props: {
   updateKey: (id: string, patch: Partial<ProxyKey>) => Promise<void>
   rotateKey: (id: string) => Promise<void>
   deleteKey: (id: string) => Promise<void>
+  openCreateKeyForm: () => void
 }) {
   return (
     <section className="stack">
       <div className="toolbar">
         <p>每个人一个 proxy key。真实 Kimi Key 只留在服务器环境变量里。</p>
-        <button className="primary-button" onClick={() => props.setShowCreate(true)}>
+        <button className="primary-button" onClick={props.openCreateKeyForm}>
           <Plus size={16} />
           新建 Key
         </button>
@@ -737,7 +756,7 @@ function KeyForm({
     <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)}>
       <div className="panel-heading">
         <h2>{title}</h2>
-        <span>默认每人 45%，两人合计 90%，保留 10% 缓冲。</span>
+        <span>默认使用设置页的“人数 / 预留比例”计算出的每人占比。</span>
       </div>
       <div className="form-grid">
         <label>
@@ -826,6 +845,7 @@ function SettingsPage({
   officialUsage,
   refreshOfficialUsage,
   syncOfficialTotals,
+  applyQuotaAllocation,
   tokenDraft,
   setTokenDraft,
   saveToken
@@ -836,6 +856,7 @@ function SettingsPage({
   officialUsage: OfficialUsage | null
   refreshOfficialUsage: () => Promise<void>
   syncOfficialTotals: () => Promise<void>
+  applyQuotaAllocation: () => Promise<void>
   tokenDraft: string
   setTokenDraft: (value: string) => void
   saveToken: (event: FormEvent) => void
@@ -929,6 +950,40 @@ function SettingsPage({
         <p className="muted-text">
           当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。这个请求不代表 A/B 任一 proxy key；关闭时不会请求上游。
         </p>
+        <div className="panel-heading compact-heading">
+          <h2>额度分配</h2>
+          <span>每人默认占比 = (100% - 预留%) / 人数。</span>
+        </div>
+        <div className="form-grid">
+          <label>
+            人数
+            <input
+              type="number"
+              min={1}
+              value={settings.memberCount}
+              onChange={(event) => setSettings({ ...settings, memberCount: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            预留比例 %
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={settings.reservePercent}
+              onChange={(event) => setSettings({ ...settings, reservePercent: Number(event.target.value) })}
+            />
+          </label>
+        </div>
+        <div className="allocation-summary">
+          <div>
+            <span>当前每人默认占比</span>
+            <strong>{(((100 - settings.reservePercent) / Math.max(1, settings.memberCount)) || 0).toFixed(2)}%</strong>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => void applyQuotaAllocation()}>
+            应用到所有 Key
+          </button>
+        </div>
         <div className="panel-heading compact-heading">
           <h2>账号总池</h2>
           <span>每个 proxy key 的硬上限 = 总池 × 占比。</span>

@@ -533,6 +533,29 @@ label {
   gap: 8px;
 }
 
+.allocation-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  background: #f9fbfd;
+}
+
+.allocation-summary span {
+  display: block;
+  color: #667385;
+  font-size: 13px;
+}
+
+.allocation-summary strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 22px;
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
@@ -619,6 +642,7 @@ label {
   .topbar,
   .toolbar,
   .secret-banner,
+  .allocation-summary,
   .panel-heading,
   .form-actions {
     align-items: flex-start;
