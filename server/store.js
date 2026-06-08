@@ -184,6 +184,7 @@ export class Store {
       name: String(input.name || 'Team member'),
       keyHash: this.hashKey(secret),
       keyPreview: `${secret.slice(0, 7)}...${secret.slice(-4)}`,
+      secret,
       active: input.active !== false,
       quotaPercent: Object.prototype.hasOwnProperty.call(input, 'quotaPercent')
         ? Math.max(0, Math.min(100, Number(input.quotaPercent || 0)))
@@ -231,6 +232,7 @@ export class Store {
     const secret = this.generateSecret()
     key.keyHash = this.hashKey(secret)
     key.keyPreview = `${secret.slice(0, 7)}...${secret.slice(-4)}`
+    key.secret = secret
     key.updatedAt = nowIso()
     await this.save()
     return { key: this.publicKey(key), secret }

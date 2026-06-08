@@ -58,6 +58,7 @@ type ProxyKey = {
   id: string
   name: string
   keyPreview: string
+  secret: string
   active: boolean
   quotaPercent: number
   concurrencyLimit: number
@@ -518,7 +519,7 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
         {newSecret && (
           <div className="secret-banner">
             <div>
-              <strong>新 proxy key 只显示一次</strong>
+              <strong>新 proxy key</strong>
               <code>{newSecret}</code>
             </div>
             <button className="ghost-button" onClick={() => void navigator.clipboard.writeText(newSecret)} title="复制">
@@ -752,6 +753,13 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
                     </div>
                     <div className="key-preview-row">
                       <code>{key.keyPreview}</code>
+                      <button
+                        className="icon-button"
+                        onClick={() => void navigator.clipboard.writeText(key.secret)}
+                        title="复制完整 Key"
+                      >
+                        <Copy size={14} />
+                      </button>
                     </div>
                     <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} />
                     <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} />
@@ -1023,7 +1031,16 @@ function KeysPage(props: {
                   />
                 </td>
                 <td>
-                  <code>{key.keyPreview}</code>
+                  <div className="key-secret-row">
+                    <code>{key.keyPreview}</code>
+                    <button
+                      className="icon-button"
+                      onClick={() => void navigator.clipboard.writeText(key.secret)}
+                      title="复制完整 Key"
+                    >
+                      <Copy size={14} />
+                    </button>
+                  </div>
                 </td>
                 <td>
                   <select
