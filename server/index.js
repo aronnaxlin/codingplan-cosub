@@ -307,7 +307,7 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
 
 app.use('/v1', express.raw({ type: '*/*', limit: '50mb' }))
 
-app.all('/v1/*splat', async (req, res) => {
+app.all('/v1/*', async (req, res) => {
   const started = Date.now()
   const proxySecret = extractBearer(req)
   const key = store.findKeyBySecret(proxySecret)
@@ -460,7 +460,7 @@ app.all('/v1/*splat', async (req, res) => {
 
 const distDir = path.join(rootDir, 'dist')
 app.use(express.static(distDir))
-app.get('*splat', (_req, res) => {
+app.get('*', (_req, res) => {
   res.sendFile(path.join(distDir, 'index.html'), (error) => {
     if (error) res.status(404).send('Run npm run build before using production static serving.')
   })
