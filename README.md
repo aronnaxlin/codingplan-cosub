@@ -49,6 +49,35 @@ http://127.0.0.1:8787
 
 面板登录使用 `ADMIN_TOKEN`。
 
+## Docker 运行
+
+复制并编辑环境变量：
+
+```bash
+cp .env.example .env
+# 编辑 .env，设置 ADMIN_TOKEN 和 KIMI_API_KEY
+```
+
+构建并启动：
+
+```bash
+docker compose up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose logs -f
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
+数据文件 `data/store.json` 会通过 volume 挂载到宿主机，容器重启不会丢失。
+
 ## 客户端配置
 
 在 Roo Code、OpenCode 或其他 OpenAI-compatible 客户端里配置：

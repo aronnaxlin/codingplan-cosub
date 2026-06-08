@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-change-this-admin-token}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - KIMI_UPSTREAM_BASE_URL=${KIMI_UPSTREAM_BASE_URL:-https://api.kimi.com/coding/v1}
+      - GLOBAL_CONCURRENCY_LIMIT=${GLOBAL_CONCURRENCY_LIMIT:-2}
+      - DATA_FILE=./data/store.json
+      - KIMI_QUOTA_USER_AGENT=${KIMI_QUOTA_USER_AGENT:-KimiThinProxy/0.1 quota-check}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
