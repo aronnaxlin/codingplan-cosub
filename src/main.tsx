@@ -90,6 +90,7 @@ type Stats = {
   errors: number
   avgLatency: number
   hasUpstreamKey: boolean
+  officialUsage: OfficialUsage | null
   settings: SettingsState
   concurrency: {
     globalActive: number
@@ -101,6 +102,9 @@ type SettingsState = {
   upstreamBaseUrl: string
   globalConcurrencyLimit: number
   keepUsageDays: number
+  quotaCheckEnabled: boolean
+  quotaCheckIntervalMinutes: number
+  quotaCheckUserAgent: string
   totalFiveHourRequestLimit: number
   totalWeeklyRequestLimit: number
   totalMonthlyRequestLimit: number
@@ -108,6 +112,27 @@ type SettingsState = {
   totalWeeklyTokenLimit: number
   totalMonthlyTokenLimit: number
   hasUpstreamKey?: boolean
+}
+
+type OfficialQuota = {
+  limit: number | null
+  used: number | null
+  remaining: number | null
+  percentUsed: number | null
+  resetTime: string | null
+}
+
+type OfficialUsage = {
+  ok: boolean
+  status?: number
+  error?: string
+  fetchedAt: string
+  userAgent?: string
+  plan?: string | null
+  weekly?: OfficialQuota | null
+  session?: (OfficialQuota & { windowMs?: number | null }) | null
+  largestWindow?: (OfficialQuota & { windowMs?: number | null }) | null
+  parallelLimit?: number | null
 }
 
 const defaultKeyForm = {
@@ -174,6 +199,7 @@ function App() {
   const [keys, setKeys] = useState<ProxyKey[]>([])
   const [usage, setUsage] = useState<UsageEntry[]>([])
   const [settings, setSettings] = useState<SettingsState | null>(null)
+  const [officialUsage, setOfficialUsage] = useState<OfficialUsage | null>(null)
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
   const [newSecret, setNewSecret] = useState('')
@@ -212,6 +238,7 @@ function App() {
       setKeys(nextKeys)
       setUsage(nextUsage)
       setSettings(nextSettings)
+      setOfficialUsage(nextStats.officialUsage)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '加载失败')
     } finally {
@@ -278,6 +305,23 @@ function App() {
       body: JSON.stringify(settings)
     })
     setSettings(saved)
+    await loadAll()
+  }
+
+  async function refreshOfficialUsage() {
+    setNotice('')
+    try {
+      const result = await api<OfficialUsage>('/api/admin/official-usage/refresh', { method: 'POST' })
+      setOfficialUsage(result)
+      await loadAll()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '官方额度刷新失败')
+      await loadAll()
+    }
+  }
+
+  async function syncOfficialTotals() {
+    await api<SettingsState>('/api/admin/official-usage/sync-totals', { method: 'POST' })
     await loadAll()
   }
 
@@ -375,7 +419,9 @@ function App() {
           </div>
         )}
 
-        {page === 'dashboard' && stats && <Dashboard stats={stats} keys={keys} />}
+        {page === 'dashboard' && stats && (
+          <Dashboard stats={stats} keys={keys} officialUsage={officialUsage} refreshOfficialUsage={refreshOfficialUsage} />
+        )}
         {page === 'keys' && (
           <KeysPage
             keys={keys}
@@ -395,6 +441,9 @@ function App() {
             settings={settings}
             setSettings={setSettings}
             saveSettings={saveSettings}
+            officialUsage={officialUsage}
+            refreshOfficialUsage={refreshOfficialUsage}
+            syncOfficialTotals={syncOfficialTotals}
             tokenDraft={tokenDraft}
             setTokenDraft={setTokenDraft}
             saveToken={saveToken}
@@ -405,7 +454,17 @@ function App() {
   )
 }
 
-function Dashboard({ stats, keys }: { stats: Stats; keys: ProxyKey[] }) {
+function Dashboard({
+  stats,
+  keys,
+  officialUsage,
+  refreshOfficialUsage
+}: {
+  stats: Stats
+  keys: ProxyKey[]
+  officialUsage: OfficialUsage | null
+  refreshOfficialUsage: () => Promise<void>
+}) {
   const cards = [
     { label: 'Proxy Keys', value: `${stats.activeKeys}/${stats.totalKeys}`, hint: '启用 / 全部', icon: KeyRound, tone: 'blue' },
     { label: '今日请求', value: fmtNumber(stats.todayRequests), hint: `累计 ${fmtNumber(stats.totalRequests)}`, icon: Activity, tone: 'green' },
@@ -431,6 +490,7 @@ function Dashboard({ stats, keys }: { stats: Stats; keys: ProxyKey[] }) {
           )
         })}
       </div>
+      <OfficialUsagePanel officialUsage={officialUsage} refreshOfficialUsage={refreshOfficialUsage} />
       <section className="panel">
         <div className="panel-heading">
           <h2>成员窗口使用</h2>
@@ -459,6 +519,73 @@ function Dashboard({ stats, keys }: { stats: Stats; keys: ProxyKey[] }) {
         </div>
       </section>
     </section>
+  )
+}
+
+function OfficialUsagePanel({
+  officialUsage,
+  refreshOfficialUsage
+}: {
+  officialUsage: OfficialUsage | null
+  refreshOfficialUsage: () => Promise<void>
+}) {
+  const ok = officialUsage?.ok
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>官方额度检查</h2>
+          <span>每 1 小时自动刷新一次，主要依赖手动刷新；请求使用管理端透明身份。</span>
+        </div>
+        <button className="ghost-button" onClick={() => void refreshOfficialUsage()}>
+          <RefreshCw size={16} />
+          手动刷新
+        </button>
+      </div>
+      {!officialUsage ? (
+        <p className="muted-text">尚未刷新。点击手动刷新后会请求 Kimi Code `/coding/v1/usages`。</p>
+      ) : ok ? (
+        <div className="official-grid">
+          <OfficialQuotaCard title="5h 窗口" quota={officialUsage.session} />
+          <OfficialQuotaCard title="周额度" quota={officialUsage.weekly} />
+          <article className="official-card">
+            <span>并发上限</span>
+            <strong>{officialUsage.parallelLimit ?? '-'}</strong>
+            <small>官方返回 parallel.limit</small>
+          </article>
+          <article className="official-card">
+            <span>刷新时间</span>
+            <strong>{fmtDate(officialUsage.fetchedAt)}</strong>
+            <small>{officialUsage.userAgent || 'KimiThinProxy/0.1 quota-check'}</small>
+          </article>
+        </div>
+      ) : (
+        <div className="official-error">
+          <strong>官方额度刷新失败</strong>
+          <span>{officialUsage.error || `HTTP ${officialUsage.status || 0}`}</span>
+          <small>当前不会伪装成 Kimi CLI；如果官方拒绝该 UA，会保留失败状态供你判断。</small>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function OfficialQuotaCard({ title, quota }: { title: string; quota?: OfficialQuota | null }) {
+  const used = quota?.used ?? 0
+  const limit = quota?.limit ?? 0
+  const pct = quota?.percentUsed ?? percent(used, limit)
+  return (
+    <article className="official-card">
+      <span>{title}</span>
+      <strong>{limit ? `${pct}%` : '-'}</strong>
+      <small>
+        {limit ? `${fmtNumber(used)} / ${fmtNumber(limit)}` : '无官方数据'}
+        {quota?.resetTime ? ` · ${fmtDate(quota.resetTime)} 重置` : ''}
+      </small>
+      <div className="progress">
+        <span style={{ width: `${pct || 0}%` }} />
+      </div>
+    </article>
   )
 }
 
@@ -692,6 +819,9 @@ function SettingsPage({
   settings,
   setSettings,
   saveSettings,
+  officialUsage,
+  refreshOfficialUsage,
+  syncOfficialTotals,
   tokenDraft,
   setTokenDraft,
   saveToken
@@ -699,6 +829,9 @@ function SettingsPage({
   settings: SettingsState
   setSettings: (value: SettingsState) => void
   saveSettings: (event: FormEvent) => Promise<void>
+  officialUsage: OfficialUsage | null
+  refreshOfficialUsage: () => Promise<void>
+  syncOfficialTotals: () => Promise<void>
   tokenDraft: string
   setTokenDraft: (value: string) => void
   saveToken: (event: FormEvent) => void
@@ -740,6 +873,48 @@ function SettingsPage({
             />
           </label>
         </div>
+        <div className="panel-heading compact-heading">
+          <h2>官方额度检查</h2>
+          <span>使用服务端 KIMI_API_KEY 请求 `/coding/v1/usages`。</span>
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={settings.quotaCheckEnabled}
+            onChange={(event) => setSettings({ ...settings, quotaCheckEnabled: event.target.checked })}
+          />
+          启用每小时自动检查
+        </label>
+        <div className="form-grid">
+          <label>
+            自动刷新间隔分钟
+            <input
+              type="number"
+              min={60}
+              value={settings.quotaCheckIntervalMinutes}
+              onChange={(event) => setSettings({ ...settings, quotaCheckIntervalMinutes: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            额度检查 User-Agent
+            <input
+              value={settings.quotaCheckUserAgent}
+              onChange={(event) => setSettings({ ...settings, quotaCheckUserAgent: event.target.value })}
+            />
+          </label>
+        </div>
+        <div className="preset-row">
+          <button type="button" className="ghost-button" onClick={() => void refreshOfficialUsage()}>
+            <RefreshCw size={16} />
+            手动刷新官方额度
+          </button>
+          <button type="button" className="ghost-button" onClick={() => void syncOfficialTotals()} disabled={!officialUsage?.ok}>
+            同步 5h/周总池
+          </button>
+        </div>
+        <p className="muted-text">
+          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。这个请求不代表 A/B 任一 proxy key。
+        </p>
         <div className="panel-heading compact-heading">
           <h2>账号总池</h2>
           <span>每个 proxy key 的硬上限 = 总池 × 占比。</span>

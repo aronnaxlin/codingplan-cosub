@@ -328,6 +328,42 @@ button {
   align-items: start;
 }
 
+.official-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.official-card {
+  display: grid;
+  gap: 8px;
+  min-height: 118px;
+  padding: 14px;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  background: #f9fbfd;
+}
+
+.official-card span,
+.official-card small,
+.muted-text {
+  color: #667385;
+}
+
+.official-card strong {
+  font-size: 22px;
+}
+
+.official-error {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid #f1c27d;
+  border-radius: 8px;
+  color: #7a4215;
+  background: #fff8eb;
+}
+
 .usage-card {
   padding: 14px;
 }
@@ -372,6 +408,11 @@ button {
   padding: 0 14px;
   color: #ffffff;
   background: #2166a8;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .ghost-button {
@@ -492,6 +533,17 @@ label {
   gap: 8px;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  min-height: 16px;
+}
+
 .ua-cell {
   max-width: 280px;
   overflow: hidden;
@@ -531,6 +583,7 @@ label {
   }
 
   .card-grid,
+  .official-grid,
   .key-usage-grid,
   .settings-grid {
     grid-template-columns: 1fr;

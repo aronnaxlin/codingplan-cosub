@@ -10,10 +10,14 @@ export class Store {
     this.data = {
       keys: [],
       usage: [],
+      officialUsage: null,
       settings: {
         upstreamBaseUrl: process.env.KIMI_UPSTREAM_BASE_URL || 'https://api.kimi.com/coding/v1',
         globalConcurrencyLimit: Number(process.env.GLOBAL_CONCURRENCY_LIMIT || 2),
         keepUsageDays: 45,
+        quotaCheckEnabled: true,
+        quotaCheckIntervalMinutes: 60,
+        quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
         totalFiveHourRequestLimit: 1307,
         totalWeeklyRequestLimit: 9073,
         totalMonthlyRequestLimit: 36292,
@@ -237,6 +241,12 @@ export class Store {
     return this.data.usage.slice(0, Math.max(1, Math.min(Number(limit || 100), 500)))
   }
 
+  async recordOfficialUsage(result) {
+    this.data.officialUsage = result
+    await this.save()
+    return this.data.officialUsage
+  }
+
   async updateSettings(patch) {
     if (patch.upstreamBaseUrl) {
       this.data.settings.upstreamBaseUrl = String(patch.upstreamBaseUrl).replace(/\/+$/, '')
@@ -246,6 +256,15 @@ export class Store {
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'keepUsageDays')) {
       this.data.settings.keepUsageDays = Math.max(30, Number(patch.keepUsageDays || 45))
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckEnabled')) {
+      this.data.settings.quotaCheckEnabled = Boolean(patch.quotaCheckEnabled)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckIntervalMinutes')) {
+      this.data.settings.quotaCheckIntervalMinutes = Math.max(60, Number(patch.quotaCheckIntervalMinutes || 60))
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckUserAgent')) {
+      this.data.settings.quotaCheckUserAgent = String(patch.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check')
     }
     const numericSettings = [
       'totalFiveHourRequestLimit',

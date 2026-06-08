@@ -12,6 +12,7 @@
 - 管理面板查看总览、key、审计日志、代理设置
 - 透传客户端原始 `User-Agent`，只替换上游 `Authorization`
 - 真实 Kimi Key 只放在服务端环境变量，不在前端展示
+- 实验性官方额度检查：手动刷新为主，每小时自动刷新一次
 
 ## 本地运行
 
@@ -29,6 +30,7 @@ KIMI_API_KEY=sk-your-kimi-code-key
 KIMI_UPSTREAM_BASE_URL=https://api.kimi.com/coding/v1
 GLOBAL_CONCURRENCY_LIMIT=2
 DATA_FILE=./data/store.json
+KIMI_QUOTA_USER_AGENT=KimiThinProxy/0.1 quota-check
 ```
 
 启动：
@@ -98,6 +100,20 @@ Allegretto 下按 45% 计算，每人约为：
 ```
 
 设置页也提供 Andante / Allegretto 预设按钮，实际套餐不同可以一键切换。
+
+## 官方额度检查
+
+管理面板可以手动刷新 Kimi Code 官方额度。代理会请求：
+
+```text
+GET https://api.kimi.com/coding/v1/usages
+Authorization: Bearer <KIMI_API_KEY>
+User-Agent: KimiThinProxy/0.1 quota-check
+```
+
+这个请求是管理端探针，不代表任何一个成员的 proxy key，也不会进入 A/B 的本地用量账本。默认每 1 小时自动刷新一次，主要还是通过面板手动刷新确认。
+
+注意：该接口在开源项目中被使用，但不是 Kimi 正式承诺稳定的公开 API。如果官方拒绝当前 `User-Agent` 或权限，面板会显示 `401/403/5xx` 错误；项目不会自动伪装成 Kimi CLI。
 
 ## 使用边界
 

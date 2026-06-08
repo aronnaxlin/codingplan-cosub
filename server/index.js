@@ -1,9 +1,11 @@
+import 'dotenv/config'
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
 import { ConcurrencyGate, checkRollingLimits } from './limits.js'
 import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, upstreamUrl } from './proxy.js'
+import { fetchOfficialUsage } from './officialUsage.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..')
@@ -12,6 +14,7 @@ const adminToken = process.env.ADMIN_TOKEN || 'change-this-admin-token'
 const upstreamKey = process.env.KIMI_API_KEY || ''
 const store = new Store(path.resolve(rootDir, process.env.DATA_FILE || './data/store.json'))
 const gate = new ConcurrencyGate()
+let lastOfficialAutoRefreshAt = 0
 
 await store.load()
 
@@ -51,8 +54,18 @@ function dashboardStats() {
     avgLatency,
     concurrency: gate.snapshot(),
     hasUpstreamKey: Boolean(upstreamKey),
+    officialUsage: store.data.officialUsage,
     settings: store.data.settings
   }
+}
+
+async function refreshOfficialUsage() {
+  const result = await fetchOfficialUsage({
+    token: upstreamKey,
+    userAgent: store.data.settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'
+  })
+  await store.recordOfficialUsage(result)
+  return result
 }
 
 app.get('/health', (_req, res) => {
@@ -111,6 +124,35 @@ app.get('/api/admin/settings', requireAdmin, (_req, res) => {
 app.patch('/api/admin/settings', requireAdmin, async (req, res) => {
   const settings = await store.updateSettings(req.body || {})
   res.json({ ...settings, hasUpstreamKey: Boolean(upstreamKey) })
+})
+
+app.get('/api/admin/official-usage', requireAdmin, (_req, res) => {
+  res.json({
+    quotaCheckEnabled: store.data.settings.quotaCheckEnabled,
+    quotaCheckIntervalMinutes: store.data.settings.quotaCheckIntervalMinutes,
+    quotaCheckUserAgent: store.data.settings.quotaCheckUserAgent,
+    hasUpstreamKey: Boolean(upstreamKey),
+    data: store.data.officialUsage
+  })
+})
+
+app.post('/api/admin/official-usage/refresh', requireAdmin, async (_req, res) => {
+  const result = await refreshOfficialUsage()
+  res.status(result.ok ? 200 : 502).json(result)
+})
+
+app.post('/api/admin/official-usage/sync-totals', requireAdmin, async (_req, res) => {
+  const official = store.data.officialUsage
+  if (!official?.ok) {
+    res.status(400).json({ error: 'official_usage_unavailable' })
+    return
+  }
+
+  const patch = {}
+  if (official.session?.limit) patch.totalFiveHourRequestLimit = official.session.limit
+  if (official.weekly?.limit) patch.totalWeeklyRequestLimit = official.weekly.limit
+  const settings = await store.updateSettings(patch)
+  res.json({ ...settings, applied: patch })
 })
 
 app.use('/v1', express.raw({ type: '*/*', limit: '50mb' }))
@@ -283,3 +325,13 @@ app.listen(port, () => {
     console.log('KIMI_API_KEY is not set. Proxy calls will return 503 until configured.')
   }
 })
+
+setInterval(() => {
+  if (!store.data.settings.quotaCheckEnabled) return
+  const intervalMs = Math.max(60, Number(store.data.settings.quotaCheckIntervalMinutes || 60)) * 60 * 1000
+  if (Date.now() - lastOfficialAutoRefreshAt < intervalMs) return
+  lastOfficialAutoRefreshAt = Date.now()
+  refreshOfficialUsage().catch((error) => {
+    console.warn(`official usage refresh failed: ${error.message}`)
+  })
+}, 60 * 1000)
