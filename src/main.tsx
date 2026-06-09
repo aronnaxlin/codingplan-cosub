@@ -315,6 +315,9 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
   const [newSecret, setNewSecret] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [keyForm, setKeyForm] = useState(defaultKeyForm)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('kcp_sidebar_collapsed') === 'true' } catch { return false }
+  })
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch(path, {
@@ -458,17 +461,28 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
     return map
   }, [users])
 
+  const toggleSidebar = () => {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    try { localStorage.setItem('kcp_sidebar_collapsed', String(next)) } catch {}
+  }
+
   return (
-    <div className="app-shell">
+    <div className={classNames('app-shell', sidebarCollapsed && 'sidebar-collapsed')}>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="logo-box">
             <ShieldCheck size={22} />
           </div>
-          <div>
+          <div className="sidebar-brand-text">
             <strong>kimi-codingplan-cosub</strong>
             <span>internal quota gateway</span>
           </div>
+          <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? '展开' : '收起'}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points={sidebarCollapsed ? "9 18 15 12 9 6" : "15 18 9 12 15 6"} />
+            </svg>
+          </button>
         </div>
         <nav>
           {nav.map((item) => {
@@ -492,14 +506,16 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
             <span>{auth.user.username}</span>
             <span className="role-tag">{auth.user.role}</span>
           </div>
-          <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
-            <RefreshCw size={16} className={loading ? 'spin' : ''} />
-            刷新
-          </button>
-          <button className="ghost-button logout-btn" onClick={onLogout}>
-            <LogOut size={14} />
-            退出
-          </button>
+          <div className="sidebar-actions">
+            <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
+              <RefreshCw size={16} className={loading ? 'spin' : ''} />
+              <span>刷新</span>
+            </button>
+            <button className="ghost-button logout-btn" onClick={onLogout}>
+              <LogOut size={14} />
+              <span>退出</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -578,6 +594,15 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
   const [passwordForm, setPasswordForm] = useState({ current: '', newPwd: '', confirm: '' })
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('kcp_sidebar_collapsed') === 'true' } catch { return false }
+  })
+
+  const toggleSidebar = () => {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    try { localStorage.setItem('kcp_sidebar_collapsed', String(next)) } catch {}
+  }
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch(path, {
@@ -646,16 +671,21 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
   const selectedTitle = nav.find((item) => item.id === page)?.label || '我的 Keys'
 
   return (
-    <div className="app-shell">
+    <div className={classNames('app-shell', sidebarCollapsed && 'sidebar-collapsed')}>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="logo-box">
             <ShieldCheck size={22} />
           </div>
-          <div>
+          <div className="sidebar-brand-text">
             <strong>kimi-codingplan-cosub</strong>
             <span>用户面板</span>
           </div>
+          <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? '展开' : '收起'}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points={sidebarCollapsed ? "9 18 15 12 9 6" : "15 18 9 12 15 6"} />
+            </svg>
+          </button>
         </div>
         <nav>
           {nav.map((item) => {
@@ -665,6 +695,7 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
                 key={item.id}
                 className={classNames('nav-item', page === item.id && 'active')}
                 onClick={() => setPage(item.id)}
+                title={item.label}
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
@@ -677,14 +708,16 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
             <User size={14} />
             <span>{auth.user.username}</span>
           </div>
-          <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
-            <RefreshCw size={16} className={loading ? 'spin' : ''} />
-            刷新
-          </button>
-          <button className="ghost-button logout-btn" onClick={onLogout}>
-            <LogOut size={14} />
-            退出
-          </button>
+          <div className="sidebar-actions">
+            <button className="ghost-button" onClick={() => void loadAll()} title="刷新">
+              <RefreshCw size={16} className={loading ? 'spin' : ''} />
+              <span>刷新</span>
+            </button>
+            <button className="ghost-button logout-btn" onClick={onLogout}>
+              <LogOut size={14} />
+              <span>退出</span>
+            </button>
+          </div>
         </div>
       </aside>
 
