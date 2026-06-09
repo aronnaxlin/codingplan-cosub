@@ -40,7 +40,7 @@ KIMI_API_KEY = "sk-xxx"   # <-- 替换为你的 Kimi API Key
 # 支持审计日志、限额分配、并发控制
 # proxy key 从代理后台生成
 [providers.proxy]
-type = "openai"
+type = "kimi"
 base_url = "https://your-proxy-domain.example.com/v1"
 
 [providers.proxy.env]
