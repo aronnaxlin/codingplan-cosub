@@ -78,9 +78,6 @@ function recomputeSecondsUntilReset(resetTime) {
 function computeRefreshInfo(official) {
   const intervalMinutes = store.data.settings.quotaCheckIntervalMinutes || 0
 
-  // NOTE: Kimi API returns encapsulated/fake quota numbers (limit=100).
-  // remainingPercent is NOT trustworthy for real quota exhaustion.
-  // We only use resetTime (time-based) for adaptive refresh.
   const minRemainingPercent = official?.ok
     ? Math.min(
         ...[official.session, official.largestWindow, official.weekly]
@@ -113,7 +110,7 @@ function computeRefreshInfo(official) {
   // Recompute secondsUntilReset based on CURRENT time (not stale cached value)
   for (const w of windows) {
     const secondsUntilReset = recomputeSecondsUntilReset(w.resetTime)
-    if (secondsUntilReset !== null && secondsUntilReset > 0 && secondsUntilReset < 600) {
+    if (secondsUntilReset !== null && secondsUntilReset >= 0 && secondsUntilReset < 600) {
       intervalMs = minInterval
       reason = 'near_reset'
       break
@@ -214,7 +211,7 @@ app.get('/api/user/stats', requireAuth, (req, res) => {
   const totalTokens = myUsage.reduce((sum, item) => sum + Number(item.totalTokens || 0), 0)
   const todayTokens = myToday.reduce((sum, item) => sum + Number(item.totalTokens || 0), 0)
   res.json({
-    keys: keys.map((key) => ({ ...key, ...store.usageReport(key) })),
+    keys: keys.map((key) => ({ ...key, ...store.usageReport(key), dynamicLimits: store.dynamicLimitsForKey(key.id, store.data.officialUsage) })),
     todayRequests: myToday.length,
     totalRequests: myUsage.length,
     todayTokens,
@@ -310,16 +307,6 @@ app.post('/api/admin/official-usage/refresh', requireAuth, requireAdmin, async (
   }
   const result = await refreshOfficialUsage()
   res.status(result.ok ? 200 : 502).json(result)
-})
-
-// NOTE: Disabled — Kimi API returns encapsulated/fake quota numbers (limit=100).
-// We do NOT sync official limits into local presets because they are not real.
-// Local presets (total*Limit settings) remain the source of truth.
-app.post('/api/admin/official-usage/sync-totals', requireAuth, requireAdmin, async (_req, res) => {
-  res.status(409).json({
-    error: 'sync_totals_disabled',
-    message: 'Kimi API returns fake/encapsulated quota numbers. Local presets remain the source of truth.'
-  })
 })
 
 // ========== User management routes (admin only) ==========
@@ -497,7 +484,7 @@ app.all('/v1/*', async (req, res) => {
     return
   }
 
-  const rolling = checkRollingLimits(store, key)
+  const rolling = checkRollingLimits(store, key, inputTokens)
   if (!rolling.ok) {
     status = 429
     errorCode = rolling.reason
@@ -605,15 +592,17 @@ setInterval(() => {
 
   const now = Date.now()
 
-  // SPECIAL: If any window has just reset (secondsUntilReset <= 0), force refresh
-  // immediately regardless of cooldown. This ensures we pick up the new quota
-  // as soon as the reset time arrives.
+  // SPECIAL: If any window has just reset, force refresh after a 1 minute grace
+  // period so the local cycle follows the official reset without racing it.
   const official = store.data.officialUsage
   const anyWindowJustReset =
     official?.ok &&
     [official.session, official.largestWindow, official.weekly]
       .filter(Boolean)
-      .some((w) => recomputeSecondsUntilReset(w.resetTime) === 0)
+      .some((w) => {
+        if (!w.resetTime) return false
+        return Date.now() >= new Date(w.resetTime).getTime() + 60 * 1000
+      })
 
   if (!anyWindowJustReset && now < nextAllowedRefreshAt) return
 

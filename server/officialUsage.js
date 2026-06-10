@@ -17,8 +17,8 @@ function parseQuota(detail) {
   let used = toNumber(detail.used)
   const remaining = toNumber(detail.remaining)
   if (used === null && limit !== null && remaining !== null) used = limit - remaining
-  const percentUsed = limit && used !== null ? Math.max(0, Math.min(100, Math.round((used / limit) * 100))) : null
-  const remainingPercent = limit && remaining !== null ? Math.max(0, Math.min(100, Math.round((remaining / limit) * 100))) : null
+  const percentUsed = limit && used !== null ? Math.max(0, Math.min(100, (used / limit) * 100)) : null
+  const remainingPercent = limit && remaining !== null ? Math.max(0, Math.min(100, (remaining / limit) * 100)) : null
   const resetTime = parseReset(detail.resetTime || detail.reset_at || detail.resetAt || detail.reset_time)
   return {
     limit,
@@ -70,18 +70,27 @@ export function parseOfficialUsage(data) {
   if (usageQuota) {
     windows.push({
       ...usageQuota,
-      windowMs: Number.MAX_SAFE_INTEGER,
+      windowMs: 7 * 24 * 60 * 60 * 1000,
       rawWindow: { duration: 7, timeUnit: 'DAY' }
     })
   }
 
+  windows.sort((a, b) => {
+    const av = typeof a.windowMs === 'number' ? a.windowMs : Number.MAX_SAFE_INTEGER
+    const bv = typeof b.windowMs === 'number' ? b.windowMs : Number.MAX_SAFE_INTEGER
+    return av - bv
+  })
+
+  const session = windows.find((w) => w.windowMs === 5 * 60 * 60 * 1000) || windows[0] || null
+  const weekly = windows.find((w) => w.windowMs === 7 * 24 * 60 * 60 * 1000) || usageQuota || null
+
   return {
     fetchedAt: new Date().toISOString(),
     plan: data?.user?.membership?.level || null,
-    weekly: usageQuota,
+    weekly,
     windows,
-    session: windows[0] || null,
-    largestWindow: windows[windows.length - 1] || null,
+    session,
+    largestWindow: weekly || windows[windows.length - 1] || null,
     parallelLimit: toNumber(data?.parallel?.limit),
     raw: data
   }

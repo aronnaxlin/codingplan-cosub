@@ -31,7 +31,7 @@ export class ConcurrencyGate {
   }
 }
 
-export function checkRollingLimits(store, key) {
+export function checkRollingLimits(store, key, projectedTokens = 0) {
   if (Number(key.quotaPercent || 0) <= 0) {
     return {
       ok: false,
@@ -45,32 +45,26 @@ export function checkRollingLimits(store, key) {
   const report = store.usageReport(key)
   const stats = report.usage
   const limits = report.limits
+  const dynamicLimits = store.dynamicLimitsForKey(key.id, store.data.officialUsage)
+  const fiveHourTokenLimit = dynamicLimits?.fiveHours?.tokenDynamicLimit || limits.fiveHours.tokens
+  const weeklyTokenLimit = dynamicLimits?.week?.tokenDynamicLimit || limits.week.tokens
+  const tokenProjection = Math.max(0, Number(projectedTokens || 0))
   const checks = [
     ['five_hour_request_limit', stats.fiveHours.requests, limits.fiveHours.requests],
     ['weekly_request_limit', stats.week.requests, limits.week.requests],
-    ['monthly_request_limit', stats.month.requests, limits.month.requests],
-    ['five_hour_token_limit', stats.fiveHours.tokens, limits.fiveHours.tokens],
-    ['weekly_token_limit', stats.week.tokens, limits.week.tokens],
-    ['monthly_token_limit', stats.month.tokens, limits.month.tokens]
+    ['five_hour_token_limit', stats.fiveHours.tokens + tokenProjection, fiveHourTokenLimit],
+    ['weekly_token_limit', stats.week.tokens + tokenProjection, weeklyTokenLimit]
   ]
   for (const [reason, used, limit] of checks) {
     if (limit > 0 && used >= limit) {
       return { ok: false, reason, used, limit, stats, limits }
     }
   }
-  return { ok: true, stats, limits }
+  return { ok: true, stats, limits, dynamicLimits }
 }
 
 /**
  * Check official upstream quota as a hard ceiling.
- *
- * IMPORTANT: Kimi API returns wrapped/fake quota numbers (limit=100 is NOT
- * real request count). We do NOT trust official remaining/limit/used for
- * hard rejection. All rate-limiting is driven by local rolling limits
- * (total*Limit settings) instead.
- *
- * This function is kept for forward compatibility and logging only.
- * It always returns ok=true when quotaCheck is enabled and data is fresh.
  */
 export function checkOfficialLimits(store, key) {
   const official = store.data.officialUsage
@@ -90,8 +84,24 @@ export function checkOfficialLimits(store, key) {
     return { ok: true, source: 'stale_data', staleMs: ageMs }
   }
 
-  // NOTE: We intentionally do NOT reject based on official.remaining here
-  // because Kimi API returns encapsulated/fake numbers (e.g. limit=100).
-  // Real rate-limiting is done by checkRollingLimits using local presets.
+  const windows = [
+    ['official_session_exhausted', official.session],
+    ['official_weekly_exhausted', official.weekly || official.largestWindow]
+  ]
+  for (const [reason, window] of windows) {
+    if (!window) continue
+    const remainingPercent = window.remainingPercent
+    const remaining = window.remaining
+    if ((remainingPercent != null && remainingPercent <= 0) || (remaining != null && remaining <= 0)) {
+      return {
+        ok: false,
+        source: 'official',
+        reason,
+        message: 'Kimi official quota window is exhausted.',
+        resetsAt: window.resetTime || null
+      }
+    }
+  }
+
   return { ok: true, source: 'official_passed' }
 }

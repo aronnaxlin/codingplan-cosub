@@ -3,6 +3,17 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 
 const nowIso = () => new Date().toISOString()
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1000
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const RESET_GRACE_MS = 60 * 1000
+const WINDOW_DEFS = {
+  fiveHours: { ms: FIVE_HOURS_MS, tokenLimitField: 'totalFiveHourTokenLimit', requestLimitField: 'totalFiveHourRequestLimit' },
+  week: { ms: WEEK_MS, tokenLimitField: 'totalWeeklyTokenLimit', requestLimitField: 'totalWeeklyRequestLimit' }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
 
 export class Store {
   constructor(file) {
@@ -22,15 +33,11 @@ export class Store {
         quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
         memberCount: 2,
         reservePercent: 10,
-        strictMode: true,
-        borrowEnabled: false,
-        borrowCapPercent: 50,
+        externalUsageWeight: 1,
         totalFiveHourRequestLimit: 1307,
         totalWeeklyRequestLimit: 9073,
-        totalMonthlyRequestLimit: 36292,
         totalFiveHourTokenLimit: 65000000,
-        totalWeeklyTokenLimit: 357000000,
-        totalMonthlyTokenLimit: 1428000000
+        totalWeeklyTokenLimit: 357000000
       }
     }
     this.writeQueue = Promise.resolve()
@@ -58,6 +65,12 @@ export class Store {
     if (!Array.isArray(this.data.users)) this.data.users = []
     this.data.settings.memberCount = Math.max(1, Number(this.data.settings.memberCount || 2))
     this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(this.data.settings.reservePercent ?? 10)))
+    this.data.settings.externalUsageWeight = clamp(Number(this.data.settings.externalUsageWeight ?? 1), 0, 1)
+    delete this.data.settings.strictMode
+    delete this.data.settings.borrowEnabled
+    delete this.data.settings.borrowCapPercent
+    delete this.data.settings.totalMonthlyRequestLimit
+    delete this.data.settings.totalMonthlyTokenLimit
     this.data.keys = this.data.keys.map((key) => ({
       quotaPercent: this.defaultQuotaPercent(),
       ...key
@@ -249,21 +262,45 @@ export class Store {
     return this.data.keys.length !== before
   }
 
-  usageForKey(keyId, sinceMs) {
-    const cutoff = Date.now() - sinceMs
+  officialWindowForName(official, windowName) {
+    if (!official?.ok) return null
+    const expectedMs = WINDOW_DEFS[windowName]?.ms
+    if (!expectedMs) return null
+    const windows = Array.isArray(official.windows) ? official.windows : []
+    return windows.find((w) => w.windowMs === expectedMs) ||
+      (windowName === 'fiveHours' ? official.session : official.weekly || official.largestWindow) ||
+      null
+  }
+
+  cutoffForWindow(windowName, official = this.data.officialUsage) {
+    const windowDef = WINDOW_DEFS[windowName]
+    if (!windowDef) return Date.now()
+
+    const officialWindow = this.officialWindowForName(official, windowName)
+    if (this.data.settings.quotaCheckEnabled && officialWindow?.resetTime) {
+      const resetAt = new Date(officialWindow.resetTime).getTime()
+      if (Number.isFinite(resetAt)) {
+        if (Date.now() >= resetAt + RESET_GRACE_MS) return resetAt
+        return resetAt - windowDef.ms
+      }
+    }
+
+    return Date.now() - windowDef.ms
+  }
+
+  usageForKeySince(keyId, cutoff) {
     return this.data.usage.filter((item) => item.keyId === keyId && new Date(item.createdAt).getTime() >= cutoff)
   }
 
-  usageStats(keyId) {
-    const fiveHours = this.usageForKey(keyId, 5 * 60 * 60 * 1000)
-    const week = this.usageForKey(keyId, 7 * 24 * 60 * 60 * 1000)
-    const month = this.usageForKey(keyId, 30 * 24 * 60 * 60 * 1000)
+  usageStats(keyId, official = this.data.officialUsage) {
+    const fiveHours = this.usageForKeySince(keyId, this.cutoffForWindow('fiveHours', official))
+    const week = this.usageForKeySince(keyId, this.cutoffForWindow('week', official))
     const summarize = (items) => ({
       requests: items.length,
       tokens: items.reduce((sum, item) => sum + Number(item.totalTokens || 0), 0),
       errors: items.filter((item) => item.status >= 400).length
     })
-    return { fiveHours: summarize(fiveHours), week: summarize(week), month: summarize(month) }
+    return { fiveHours: summarize(fiveHours), week: summarize(week) }
   }
 
   quotaLimitsForKey(key) {
@@ -282,10 +319,6 @@ export class Store {
       week: {
         requests: applyPct(this.data.settings.totalWeeklyRequestLimit),
         tokens: applyPct(this.data.settings.totalWeeklyTokenLimit)
-      },
-      month: {
-        requests: applyPct(this.data.settings.totalMonthlyRequestLimit),
-        tokens: applyPct(this.data.settings.totalMonthlyTokenLimit)
       }
     }
   }
@@ -305,10 +338,6 @@ export class Store {
         week: {
           requests: pct(usage.week.requests, limits.week.requests),
           tokens: pct(usage.week.tokens, limits.week.tokens)
-        },
-        month: {
-          requests: pct(usage.month.requests, limits.month.requests),
-          tokens: pct(usage.month.tokens, limits.month.tokens)
         }
       }
     }
@@ -317,12 +346,14 @@ export class Store {
   /**
    * Compute dynamic limits.
    *
-   * Algorithm ("reverse-inferred total"):
-   *   Kimi API returns used/remaining as PERCENTAGES (limit is always 100).
+   * Algorithm ("reverse-inferred total + reserve absorption"):
+   *   Kimi API returns used/remaining as percentages.
    *   At official refresh time we compute:
-   *     inferredTotal = totalLocalUsed / (officialUsed% / 100)
-   *   This value is stored on the official window and stays FIXED for the cycle.
-   *   Each person's token limit = inferredTotal * quotaPercent.
+   *     inferredTotal = totalLocalUsed / officialUsedFraction
+   *   If it is near the configured preset, it becomes the cycle total.
+   *   If official usage is much higher than local proxy usage, the difference is
+   *   treated as external drain. That drain spends the reserve first, then scales
+   *   everyone down proportionally.
    *   Local usage changes after refresh only affect the numerator.
    *
    *   Request limits still use static presets (official has no request data).
@@ -342,8 +373,22 @@ export class Store {
       // --- Token limit: use the FIXED inferredTotal stored at refresh time ---
       let tokenDynamicLimit = baseTokenLimit
       let inferredTotal = null
+      let effectiveTotal = baseTokenLimit
+      let externalUsageTokens = 0
+      let reserveAbsorbedTokens = 0
+      let userPoolScale = 1
+      let confidence = 0
 
-      if (officialWindow?.inferredTotal != null && officialWindow.inferredTotal > 0) {
+      if (officialWindow?.quotaInference) {
+        inferredTotal = officialWindow.quotaInference.inferredTotal
+        effectiveTotal = officialWindow.quotaInference.effectiveTotal || baseTokenLimit
+        externalUsageTokens = officialWindow.quotaInference.externalUsageTokens || 0
+        reserveAbsorbedTokens = officialWindow.quotaInference.reserveAbsorbedTokens || 0
+        userPoolScale = officialWindow.quotaInference.userPoolScale ?? 1
+        confidence = officialWindow.quotaInference.confidence || 0
+        const myPct = Math.max(0, Number(key.quotaPercent || 0)) / 100
+        tokenDynamicLimit = Math.max(1, Math.floor(effectiveTotal * myPct * userPoolScale))
+      } else if (officialWindow?.inferredTotal != null && officialWindow.inferredTotal > 0) {
         inferredTotal = officialWindow.inferredTotal
         const myPct = Math.max(0, Number(key.quotaPercent || 0)) / 100
         tokenDynamicLimit = Math.max(1, Math.floor(inferredTotal * myPct))
@@ -357,14 +402,101 @@ export class Store {
         tokenDynamicLimit,
         tokenRemaining: Math.max(0, tokenDynamicLimit - tokenUsed),
         officialRemaining: officialWindow?.remaining ?? null,
-        inferredTotal
+        inferredTotal,
+        effectiveTotal,
+        externalUsageTokens,
+        reserveAbsorbedTokens,
+        userPoolScale,
+        confidence
       }
     }
 
     return {
-      fiveHours: makeWindow('fiveHours', official?.session, baseQuota.fiveHours.requests, baseQuota.fiveHours.tokens),
-      week: makeWindow('week', official?.largestWindow, baseQuota.week.requests, baseQuota.week.tokens),
-      month: makeWindow('month', null, baseQuota.month.requests, baseQuota.month.tokens)
+      fiveHours: makeWindow('fiveHours', this.officialWindowForName(official, 'fiveHours'), baseQuota.fiveHours.requests, baseQuota.fiveHours.tokens),
+      week: makeWindow('week', this.officialWindowForName(official, 'week'), baseQuota.week.requests, baseQuota.week.tokens)
+    }
+  }
+
+  officialUsedFraction(window) {
+    if (!window) return null
+    if (window.percentUsed != null) return clamp(Number(window.percentUsed) / 100, 0, 1)
+    if (window.limit && window.used != null) return clamp(Number(window.used) / Number(window.limit), 0, 1)
+    if (window.remainingPercent != null) return clamp(1 - Number(window.remainingPercent) / 100, 0, 1)
+    return null
+  }
+
+  totalLocalTokensForWindow(windowName, official) {
+    const cutoff = this.cutoffForWindow(windowName, official)
+    return this.data.keys.reduce((sum, key) => {
+      const tokens = this.usageForKeySince(key.id, cutoff)
+        .reduce((inner, item) => inner + Number(item.totalTokens || 0), 0)
+      return sum + tokens
+    }, 0)
+  }
+
+  buildQuotaInference(windowName, officialWindow, official) {
+    const windowDef = WINDOW_DEFS[windowName]
+    if (!windowDef || !officialWindow) return null
+
+    const baseLimit = Number(this.data.settings[windowDef.tokenLimitField] || 0)
+    const usedFraction = this.officialUsedFraction(officialWindow)
+    if (!usedFraction || usedFraction <= 0) return null
+
+    const localUsedTokens = this.totalLocalTokensForWindow(windowName, official)
+    const reserveFraction = clamp(Number(this.data.settings.reservePercent ?? 10) / 100, 0, 1)
+    const externalUsageWeight = clamp(Number(this.data.settings.externalUsageWeight ?? 1), 0, 1)
+    const inferredTotal = localUsedTokens > 0 ? localUsedTokens / usedFraction : null
+
+    if (baseLimit <= 0 && inferredTotal) {
+      return {
+        inferredTotal: Math.round(inferredTotal),
+        effectiveTotal: Math.max(1, Math.round(inferredTotal)),
+        localUsedTokens,
+        officialUsedPercent: usedFraction * 100,
+        externalUsageTokens: 0,
+        reserveAbsorbedTokens: 0,
+        userPoolScale: 1,
+        confidence: 1,
+        mode: 'official_inferred'
+      }
+    }
+
+    const minPlausible = baseLimit * 0.5
+    const maxPlausible = baseLimit * 1.5
+    const inferredIsPlausible = inferredTotal !== null && inferredTotal >= minPlausible && inferredTotal <= maxPlausible
+
+    if (inferredIsPlausible) {
+      return {
+        inferredTotal: Math.round(inferredTotal),
+        effectiveTotal: Math.max(1, Math.round(inferredTotal)),
+        localUsedTokens,
+        officialUsedPercent: usedFraction * 100,
+        externalUsageTokens: 0,
+        reserveAbsorbedTokens: 0,
+        userPoolScale: 1,
+        confidence: 1,
+        mode: 'official_inferred'
+      }
+    }
+
+    const officialConsumedByPreset = baseLimit * usedFraction
+    const externalUsageTokens = Math.max(0, officialConsumedByPreset - localUsedTokens) * externalUsageWeight
+    const reserveTokens = baseLimit * reserveFraction
+    const reserveAbsorbedTokens = Math.min(externalUsageTokens, reserveTokens)
+    const externalOverflowTokens = Math.max(0, externalUsageTokens - reserveAbsorbedTokens)
+    const allocatablePool = Math.max(1, baseLimit * (1 - reserveFraction))
+    const userPoolScale = clamp((allocatablePool - externalOverflowTokens) / allocatablePool, 0, 1)
+
+    return {
+      inferredTotal: inferredTotal === null ? null : Math.round(inferredTotal),
+      effectiveTotal: baseLimit,
+      localUsedTokens,
+      officialUsedPercent: usedFraction * 100,
+      externalUsageTokens: Math.round(externalUsageTokens),
+      reserveAbsorbedTokens: Math.round(reserveAbsorbedTokens),
+      userPoolScale,
+      confidence: 0,
+      mode: externalUsageTokens > 0 ? 'preset_with_external_drain' : 'preset'
     }
   }
 
@@ -389,33 +521,13 @@ export class Store {
   async recordOfficialUsage(result) {
     // Compute inferred totals at refresh time so they stay fixed for the cycle.
     // Local usage changes after this point only affect the numerator, not the denominator.
-    if (result.ok && Array.isArray(result.windows)) {
-      for (const w of result.windows) {
-        if (w.used != null && w.used > 0) {
-          const windowName =
-            w.windowMs === 5 * 60 * 60 * 1000
-              ? 'fiveHours'
-              : w.windowMs === 7 * 24 * 60 * 60 * 1000
-                ? 'week'
-                : null
-          if (windowName) {
-            const totalLocalUsed = this.data.keys.reduce((sum, k) => {
-              const s = this.usageStats(k.id)
-              return sum + Number(s[windowName].tokens || 0)
-            }, 0)
-            const calculatedTotal = Math.round(totalLocalUsed / (w.used / 100))
-            const baseLimit =
-              windowName === 'fiveHours'
-                ? this.data.settings.totalFiveHourTokenLimit
-                : windowName === 'week'
-                  ? this.data.settings.totalWeeklyTokenLimit
-                  : this.data.settings.totalMonthlyTokenLimit
-            const minTotal = Math.floor(baseLimit * 0.5)
-            const maxTotal = Math.ceil(baseLimit * 1.5)
-            if (calculatedTotal >= minTotal && calculatedTotal <= maxTotal) {
-              w.inferredTotal = calculatedTotal
-            }
-          }
+    if (result.ok) {
+      for (const windowName of Object.keys(WINDOW_DEFS)) {
+        const officialWindow = this.officialWindowForName(result, windowName)
+        const inference = this.buildQuotaInference(windowName, officialWindow, result)
+        if (officialWindow && inference) {
+          officialWindow.quotaInference = inference
+          officialWindow.inferredTotal = inference.effectiveTotal
         }
       }
     }
@@ -452,22 +564,14 @@ export class Store {
     if (Object.prototype.hasOwnProperty.call(patch, 'reservePercent')) {
       this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(patch.reservePercent ?? 10)))
     }
-    if (Object.prototype.hasOwnProperty.call(patch, 'strictMode')) {
-      this.data.settings.strictMode = Boolean(patch.strictMode)
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'borrowEnabled')) {
-      this.data.settings.borrowEnabled = Boolean(patch.borrowEnabled)
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'borrowCapPercent')) {
-      this.data.settings.borrowCapPercent = Math.max(0, Math.min(100, Number(patch.borrowCapPercent || 50)))
+    if (Object.prototype.hasOwnProperty.call(patch, 'externalUsageWeight')) {
+      this.data.settings.externalUsageWeight = clamp(Number(patch.externalUsageWeight ?? 1), 0, 1)
     }
     const numericSettings = [
       'totalFiveHourRequestLimit',
       'totalWeeklyRequestLimit',
-      'totalMonthlyRequestLimit',
       'totalFiveHourTokenLimit',
-      'totalWeeklyTokenLimit',
-      'totalMonthlyTokenLimit'
+      'totalWeeklyTokenLimit'
     ]
     for (const field of numericSettings) {
       if (Object.prototype.hasOwnProperty.call(patch, field)) {

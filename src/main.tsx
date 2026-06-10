@@ -61,12 +61,16 @@ type DynamicWindow = {
   tokenRemaining: number
   officialRemaining: number | null
   inferredTotal: number | null
+  effectiveTotal?: number
+  externalUsageTokens?: number
+  reserveAbsorbedTokens?: number
+  userPoolScale?: number
+  confidence?: number
 }
 
 type DynamicLimits = {
   fiveHours: DynamicWindow
   week: DynamicWindow
-  month: DynamicWindow
 } | null
 
 type ProxyKey = {
@@ -85,17 +89,14 @@ type ProxyKey = {
   usage: {
     fiveHours: UsageWindow
     week: UsageWindow
-    month: UsageWindow
   }
   limits: {
     fiveHours: QuotaWindow
     week: QuotaWindow
-    month: QuotaWindow
   }
   percentages: {
     fiveHours: QuotaWindow
     week: QuotaWindow
-    month: QuotaWindow
   }
   dynamicLimits: DynamicLimits
 }
@@ -146,16 +147,12 @@ type SettingsState = {
   quotaCheckUserAgent: string
   memberCount: number
   reservePercent: number
-  strictMode: boolean
-  borrowEnabled: boolean
-  borrowCapPercent: number
+  externalUsageWeight: number
   defaultQuotaPercent: number
   totalFiveHourRequestLimit: number
   totalWeeklyRequestLimit: number
-  totalMonthlyRequestLimit: number
   totalFiveHourTokenLimit: number
   totalWeeklyTokenLimit: number
-  totalMonthlyTokenLimit: number
   hasUpstreamKey?: boolean
 }
 
@@ -204,19 +201,15 @@ const quotaPresets = {
     label: 'Kimi Code Andante',
     totalFiveHourRequestLimit: 359,
     totalWeeklyRequestLimit: 639,
-    totalMonthlyRequestLimit: 2556,
     totalFiveHourTokenLimit: 15000000,
-    totalWeeklyTokenLimit: 21000000,
-    totalMonthlyTokenLimit: 84000000
+    totalWeeklyTokenLimit: 21000000
   },
   allegretto: {
     label: 'Kimi Code Allegretto',
     totalFiveHourRequestLimit: 1307,
     totalWeeklyRequestLimit: 9073,
-    totalMonthlyRequestLimit: 36292,
     totalFiveHourTokenLimit: 65000000,
-    totalWeeklyTokenLimit: 357000000,
-    totalMonthlyTokenLimit: 1428000000
+    totalWeeklyTokenLimit: 357000000
   }
 } as const
 
@@ -487,11 +480,6 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
     }
   }
 
-  async function syncOfficialTotals() {
-    await api<SettingsState>('/api/admin/official-usage/sync-totals', { method: 'POST' })
-    await loadAll()
-  }
-
   async function applyQuotaAllocation() {
     await api('/api/admin/quota-allocation/apply', { method: 'POST' })
     await loadAll()
@@ -625,9 +613,7 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
             settings={settings}
             setSettings={setSettings}
             saveSettings={saveSettings}
-            officialUsage={officialUsage}
             refreshOfficialUsage={refreshOfficialUsage}
-            syncOfficialTotals={syncOfficialTotals}
             applyQuotaAllocation={applyQuotaAllocation}
           />
         )}
@@ -850,8 +836,6 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
                     <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} dynamic={key.dynamicLimits?.fiveHours} isToken />
                     <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} dynamic={key.dynamicLimits?.week} />
                     <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} dynamic={key.dynamicLimits?.week} isToken />
-                    <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} dynamic={key.dynamicLimits?.month} />
-                    <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} dynamic={key.dynamicLimits?.month} isToken />
                   </article>
                 ))}
               </div>
@@ -960,8 +944,6 @@ function Dashboard({
               <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} dynamic={key.dynamicLimits?.fiveHours} isToken />
               <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} dynamic={key.dynamicLimits?.week} />
               <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} dynamic={key.dynamicLimits?.week} isToken />
-              <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} dynamic={key.dynamicLimits?.month} />
-              <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} dynamic={key.dynamicLimits?.month} isToken />
             </article>
           ))}
         </div>
@@ -1158,7 +1140,6 @@ function KeysPage(props: {
               <th>占总池</th>
               <th>5h 请求/Token</th>
               <th>7d 请求/Token</th>
-              <th>30d 请求/Token</th>
               <th>并发</th>
               <th>最近使用</th>
               <th>状态</th>
@@ -1215,9 +1196,6 @@ function KeysPage(props: {
                 </td>
                 <td>
                   {key.percentages.week.requests}% / {key.percentages.week.tokens}%
-                </td>
-                <td>
-                  {key.percentages.month.requests}% / {key.percentages.month.tokens}%
                 </td>
                 <td>{key.concurrencyLimit}</td>
                 <td>{fmtDate(key.lastUsedAt)}</td>
@@ -1364,17 +1342,13 @@ function SettingsPage({
   settings,
   setSettings,
   saveSettings,
-  officialUsage,
   refreshOfficialUsage,
-  syncOfficialTotals,
   applyQuotaAllocation
 }: {
   settings: SettingsState
   setSettings: (value: SettingsState) => void
   saveSettings: (event: FormEvent) => Promise<void>
-  officialUsage: OfficialUsage | null
   refreshOfficialUsage: () => Promise<void>
-  syncOfficialTotals: () => Promise<void>
   applyQuotaAllocation: () => Promise<void>
 }) {
   const applyPreset = (preset: keyof typeof quotaPresets) => {
@@ -1462,14 +1436,6 @@ function SettingsPage({
             <RefreshCw size={16} />
             手动刷新官方额度
           </button>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => void syncOfficialTotals()}
-            disabled={!settings.quotaCheckEnabled || !officialUsage?.ok}
-          >
-            同步 5h/周总池
-          </button>
         </div>
         <p className="muted-text">
           当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。
@@ -1512,37 +1478,23 @@ function SettingsPage({
           </button>
         </div>
         <div className="panel-heading compact-heading">
-          <h2>官方额度限流策略</h2>
-          <span>严格模式用官方剩余额度作为动态硬上限；借用模式允许额度不足时有限透支。</span>
+          <h2>官方同步策略</h2>
+          <span>官方百分比只用于动态估算 token 总池，预设请求上限仍作为硬限制。</span>
         </div>
-        <label className="checkbox-row">
+        <label>
+          外部消耗权重（0-1）
           <input
-            type="checkbox"
-            checked={settings.strictMode}
-            onChange={(event) => setSettings({ ...settings, strictMode: event.target.checked })}
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={settings.externalUsageWeight}
+            onChange={(event) => setSettings({ ...settings, externalUsageWeight: Number(event.target.value) })}
           />
-          严格模式（官方剩余驱动动态上限）
         </label>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={settings.borrowEnabled}
-            onChange={(event) => setSettings({ ...settings, borrowEnabled: event.target.checked })}
-          />
-          允许借用（个人超限时，若全局有余量可透支）
-        </label>
-        {settings.borrowEnabled && (
-          <label>
-            借用上限 %（个人基础配额的倍数）
-            <input
-              type="number"
-              min={0}
-              max={200}
-              value={settings.borrowCapPercent}
-              onChange={(event) => setSettings({ ...settings, borrowCapPercent: Number(event.target.value) })}
-            />
-          </label>
-        )}
+        <p className="muted-text">
+          官方同步会按刷新时的已用百分比估算本周期 token 总池；若官方消耗明显高于代理日志，差额先消耗预留池，再按权重压缩所有人的剩余额度。
+        </p>
         <div className="panel-heading compact-heading">
           <h2>账号总池</h2>
           <span>每个 proxy key 的硬上限 = 总池 × 占比。</span>
@@ -1586,22 +1538,6 @@ function SettingsPage({
               type="number"
               value={settings.totalWeeklyTokenLimit}
               onChange={(event) => setSettings({ ...settings, totalWeeklyTokenLimit: Number(event.target.value) })}
-            />
-          </label>
-          <label>
-            30d 总请求
-            <input
-              type="number"
-              value={settings.totalMonthlyRequestLimit}
-              onChange={(event) => setSettings({ ...settings, totalMonthlyRequestLimit: Number(event.target.value) })}
-            />
-          </label>
-          <label>
-            30d 总 Token
-            <input
-              type="number"
-              value={settings.totalMonthlyTokenLimit}
-              onChange={(event) => setSettings({ ...settings, totalMonthlyTokenLimit: Number(event.target.value) })}
             />
           </label>
         </div>

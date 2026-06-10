@@ -1,289 +1,118 @@
-# Kimi 订阅源额度管理：审计报告与设计方案
+# Kimi 订阅源额度管理：当前算法
 
-## 一、CC-Switch 审计结论
+## 目标
 
-### 1.1 CC-Switch 的探针架构
+本项目只管理 Kimi Code 的两个有效窗口：
 
-CC-Switch（GUI + CLI）管理订阅源探针的核心在 `services/subscription.rs`：
+- `5h` 会话窗口
+- `7d` 周期窗口
 
-| 维度 | CC-Switch 做法 | 对本项目的启示 |
-|------|---------------|--------------|
-| **凭据获取** | 读取本地 OAuth 凭据（Keychain / `~/.claude/.credentials.json`） | Kimi 用 API Key 而非 OAuth，更简单 |
-| **探针端点** | Claude: `api.anthropic.com/api/oauth/usage`<br>Codex: `chatgpt.com/backend-api/wham/usage`<br>Gemini: `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` | Kimi 有 `/coding/v1/usages`，已在使用 |
-| **返回结构** | `tiers: [{name, utilization, resets_at}]` | Kimi 返回 `limits[].detail` + `window`，需转换 |
-| **探针频率** | 由前端 React Query 控制，默认 30s 刷新 usage 日志；subscription 无主动轮询，依赖用户打开面板时查询 | **过于频繁会触发风控** |
-| **额度应用** | 仅做展示和托盘提示，**不做代理层限流** | 本项目需要更进一步——用官方数据驱动限流 |
-| **风控策略** | 透传客户端 UA；Copilot 场景做请求体分类（user/agent/warmup）优化头信息 | **绝不伪造 Agent**；分类优化是 Copilot 特化，不适用于 Kimi |
+不再维护月限额。月度数字可以作为外部对比参考，但不参与代理限流、面板展示或每人分配。
 
-### 1.2 CC-Switch 的额度分配模式
+## 额度分配
 
-CC-Switch **没有**实现多用户额度分配——它是单用户多 provider 切换工具。其 `provider_quota.rs` 中的 `QuotaTarget` 只是决定"查哪个 provider 的额度"，不是"把额度分给多个用户"。
+全局总池按百分比分配：
 
-这意味着：**本项目需要原创设计合租场景下的额度分配**。
-
-### 1.3 当前项目 (kimi-codingplan-cosub) 的问题
-
-1. **官方额度是只读展示**：`officialUsage.js` 拉取了 `remaining`，但 `limits.js` 的 `checkRollingLimits` 完全依赖本地记账和静态 `total*Limit` 配置
-2. **静态分配僵化**：Andante/Allegretto 预设是固定的，不会随官方实际剩余额度变化
-3. **未利用 `resetTime`**：官方明确告诉了窗口何时重置，但系统没有用于倒计时、动态调整刷新频率
-4. **本地记账偏差**：本地按请求数/token数统计，与官方计数口径可能有差异（如 Kimi 的计费逻辑可能不同）
-5. **风控盲区**：即使官方 5h 窗口已耗尽，本地若无感知仍会透传请求，导致上游 429
-
----
-
-## 二、设计方案：官方额度驱动的动态限流与分配
-
-### 2.1 核心原则
-
-1. **不伪造 Agent**：proxy 层继续透传原始 UA，仅替换 Authorization
-2. **少量人合租**：2–5 人场景优化，不做复杂多租户隔离
-3. **风控优先**：宁可本地提前拒绝，也不让官方返回 429
-4. **官方数据为准**：本地记账为辅，官方 `remaining` 为硬边界
-
-### 2.2 额度获取逻辑增强
-
-#### 2.2.1 官方响应解析增强
-
-Kimi `/coding/v1/usages` 实际返回结构（从代码反推）：
-
-```json
-{
-  "limits": [
-    {
-      "window": { "duration": 5, "timeUnit": "HOUR" },
-      "detail": {
-        "limit": 1307,
-        "used": 100,
-        "remaining": 1207,
-        "resetTime": "2026-06-09T18:00:00Z"
-      }
-    },
-    {
-      "window": { "duration": 7, "timeUnit": "DAY" },
-      "detail": {
-        "limit": 9073,
-        "used": 1000,
-        "remaining": 8073,
-        "resetTime": "2026-06-16T00:00:00Z"
-      }
-    }
-  ],
-  "usage": {
-    "limit": 36292,
-    "used": 5000,
-    "remaining": 31292,
-    "resetTime": "2026-07-01T00:00:00Z"
-  },
-  "parallel": { "limit": 5 }
-}
+```text
+每人占比 = (100% - 预留比例) / 人数
 ```
 
-当前 `officialUsage.js` 已能解析，但缺少：
-- **按窗口名称的稳定索引**（`session` 是最小 windowMs，但不一定是 5h）
-- **resetTime 的倒计时计算**
-- **remaining 占 limit 的比例**（用于健康度判断）
+默认 `人数 = 2`、`预留比例 = 10%`，因此每人 `45%`，缓冲池 `10%`。缓冲池用于吸收突发需求和官方同步模式下的外部消耗误差。
 
-#### 2.2.2 动态刷新策略
+## 模式 1：预设额度
 
-| 场景 | 刷新间隔 | 原因 |
-|------|---------|------|
-| 刚启动 / 手动刷新 | 立即 | 获取初始状态 |
-| 剩余充足 (>30%) | 60 min | 减少官方探针频率，降低风控 |
-| 剩余紧张 (5%–30%) | 15 min | 需要较及时掌握额度消耗 |
-| 剩余临界 (<5%) | 5 min | 临近耗尽，高频监控 |
-| 接近 resetTime | resetTime + 2 min | 窗口重置后第一时间获取新额度 |
-| 每次 proxy 429 (quota exhausted) | 立即 | 被动触发，确认是否耗尽 |
+未启用官方同步时，代理使用设置页的 5h/7d 预设硬限制。默认值来自 `mahonzhan/awesome-coding-plan` 中对 Kimi Code Allegretto 的估算：
 
-**风控约束**：无论如何，两次刷新间隔 ≥ 5 min，避免被官方 rate limit。
-
-### 2.3 刷新逻辑设计
-
-```
-计时器周期: 1 min
-
-每次 tick:
-  1. 若 quotaCheckEnabled == false → 跳过
-  2. 若 now < nextAllowedRefreshAt → 跳过（防刷保护）
-  3. 计算 targetInterval:
-       - 若 officialUsage.ok == false → 60 min（退避）
-       - 若任一窗口 remaining / limit < 0.05 → 5 min
-       - 若任一窗口 remaining / limit < 0.30 → 15 min
-       - 若 resetTime 在 10 min 内 → 5 min
-       - 否则 → 60 min
-  4. 若 now - lastRefreshAt >= targetInterval → 执行刷新
-  5. 刷新后更新 lastRefreshAt, nextAllowedRefreshAt = now + 5 min
+```text
+5h 请求：1,307
+5h Token：65,000,000
+7d 请求：9,073
+7d Token：357,000,000
 ```
 
-### 2.4 额度展示 Pane 设计（Dashboard 首页）
+每个 proxy key 的限制为：
 
-新增 **「官方实时额度」** Pane，替换现有的 `OfficialUsagePanel`：
-
-```
-┌──────────────────────────────────────────────────────┐
-│ 官方实时额度                              [⟳ 刷新]   │
-├──────────────────────────────────────────────────────┤
-│  5h 会话窗口                                         │
-│  ├─ 剩余: 1,145 / 1,307 请求  (87.6%)               │
-│  ├─ 已用: 162 请求                                   │
-│  ├─ 下次重置: 2小时13分后 (18:00)                    │
-│  └─ ████████████████░░░░░░░░░░░░░░░░░░ 12.4%        │
-├──────────────────────────────────────────────────────┤
-│  7d 周期窗口                                         │
-│  ├─ 剩余: 5,897 / 9,073 请求  (65.0%)               │
-│  ├─ 已用: 3,176 请求                                 │
-│  ├─ 下次重置: 3天7小时后 (6/16 00:00)                │
-│  └─ ██████████████████████████░░░░░░░░ 35.0%        │
-├──────────────────────────────────────────────────────┤
-│  30d 月额度                                          │
-│  ├─ 剩余: 28,432 / 36,292 请求  (78.3%)             │
-│  └─ ██████████████████████░░░░░░░░░░░░ 21.7%        │
-├──────────────────────────────────────────────────────┤
-│  并发上限: 5  │  上次刷新: 14:32  │  探针间隔: 60min   │
-└──────────────────────────────────────────────────────┘
+```text
+个人请求上限 = 预设请求总池 × key.quotaPercent
+个人 Token 上限 = 预设 Token 总池 × key.quotaPercent
 ```
 
-颜色规则：
-- 剩余 > 30%：绿色（健康）
-- 剩余 5%–30%：黄色（紧张）
-- 剩余 < 5%：红色（临界）
+达到任一窗口的请求或 token 上限后返回 `429`。
 
-### 2.5 基于官方额度的分配形式
+## 模式 2：官方同步额度池
 
-#### 2.5.1 当前静态分配的问题
+启用官方额度检查后，系统会请求 Kimi Code `/coding/v1/usages` 并读取：
 
-```
-总池 = 预设值 (如 Allegretto: 5h=1307, 7d=9073)
-每人 = (100% - 10%预留) / 2人 = 45%
-→ 每人 5h = 588 请求，7d = 4082 请求
-```
+- 5h/7d 窗口的 `resetTime`
+- 5h/7d 窗口的 `used`、`remaining` 或百分比
+- 官方并发上限 `parallel.limit`，仅展示
 
-问题：如果官方 7d 已用 80%，实际只剩 1814 请求，但每人仍被允许 4082 请求——**本地限额和官方实际脱节**。
+官方接口通常给的是百分比语义。每次刷新时，系统固定一次本周期动态估算：
 
-#### 2.5.2 新方案：双轨制限流
-
-**轨道 A：个人软限额（本地记账）**
-- 基于 `quotaPercent` 和静态 `total*Limit` 计算
-- 作用：公平分配、防止个人滥用
-- 可配置为"严格模式"（用完即拒）或"借用模式"（可从共享池借）
-
-**轨道 B：全局硬限额（官方驱动）**
-- 基于官方 `remaining` 的实时值
-- 作用：保护账号不被官方风控
-- 永远是最终防线
-
-**限流决策优先级**（proxy 请求时）：
-
-```
-1. 全局并发超限 → 429 (global_concurrency_limit)
-2. 个人并发超限 → 429 (key_concurrency_limit)
-3. 官方 5h remaining <= 0 → 429 (official_session_exhausted)
-4. 官方 7d remaining <= 0 → 429 (official_weekly_exhausted)
-5. 官方 30d remaining <= 0 → 429 (official_monthly_exhausted)
-6. 个人 5h 软限额用完 + 借用关闭 → 429 (five_hour_request_limit)
-7. 个人 7d 软限额用完 + 借用关闭 → 429 (weekly_request_limit)
-8. 个人 30d 软限额用完 + 借用关闭 → 429 (monthly_request_limit)
-9. 通过 → 转发 upstream
+```text
+推算总 Token = 本地代理总 Token / 官方已用百分比
+个人动态 Token 上限 = 推算总 Token × key.quotaPercent
 ```
 
-**动态配额计算**：
+刷新后，分母固定。本地用户继续调用只增加自己的已用量，不会在下一次官方刷新前重算总池。
 
-```js
-// 每次刷新官方额度后，重新计算每个人的"动态上限"
-function computeDynamicLimits(officialUsage, settings, keys) {
-  const official = officialUsage.ok ? officialUsage : null
-  const base5h = settings.totalFiveHourRequestLimit
-  const base7d = settings.totalWeeklyRequestLimit
-  const base30d = settings.totalMonthlyRequestLimit
+示例：
 
-  // 官方实际剩余作为全局硬上限
-  const hard5h = official?.session?.remaining ?? base5h
-  const hard7d = official?.largestWindow?.remaining ?? base7d
-  const hard30d = official?.weekly?.remaining ?? base30d
+```text
+A 已用 10 tokens
+B 已用 20 tokens
+官方显示已用 11%
 
-  // 每人动态上限 = min(软限额, 官方剩余 × 个人占比)
-  // 这样保证：即使官方剩余很少，每人也不会超过官方总量
-  for (const key of keys) {
-    const pct = key.quotaPercent / 100
-    key.dynamicLimits = {
-      fiveHours: { requests: Math.floor(Math.min(base5h * pct, hard5h * pct)) },
-      week: { requests: Math.floor(Math.min(base7d * pct, hard7d * pct)) },
-      month: { requests: Math.floor(Math.min(base30d * pct, hard30d * pct)) }
-    }
-  }
-}
+推算总 Token = (10 + 20) / 0.11 = 272.72
+A 的 45% 上限 = 272.72 × 0.45 = 122.72
+
+A 面板显示约 10 / 122
+A 后续又用 1 token，显示约 11 / 122
 ```
 
-**弹性借用机制**（可选，默认关闭）：
+请求次数没有官方可换算字段，因此请求上限继续使用预设模式的 5h/7d 请求池。
 
-```js
-// 当个人用完软限额但全局还有余量时，允许有限借用
-function canBorrow(key, window, officialRemaining, allKeysUsage) {
-  if (!settings.borrowEnabled) return false
+## 外部消耗处理
 
-  const totalAllocated = allKeysUsage.reduce((sum, k) => sum + k.used, 0)
-  const totalUnused = officialRemaining - totalAllocated
+官方账号可能被 Kimi App 或其他 key 消耗，导致官方已用百分比高于代理日志。直接用 `本地用量 / 官方已用百分比` 会把总池推得过低，误伤代理内成员。
 
-  // 最多借用个人基础配额的 50%，且不超过全局剩余
-  const borrowCap = key.baseLimit * 0.5
-  const actualBorrow = Math.min(borrowCap, totalUnused * 0.2)
+当前算法：
 
-  return key.used < key.baseLimit + actualBorrow
-}
+1. 若反推总池落在预设总池的 `50% ~ 150%`，认为可信，使用反推总池。
+2. 若反推总池明显偏离预设，认为存在外部消耗或官方口径噪声。
+3. 以预设总池估算外部消耗：
+
+```text
+外部消耗 = max(0, 预设总池 × 官方已用百分比 - 本地代理已用)
+加权外部消耗 = 外部消耗 × externalUsageWeight
 ```
 
-**为什么不默认开启借用？**
-- 少量合租场景下（2-3 人），借用容易导致"一人用完、大家没得用"
-- 关闭借用 + 预留 10-20% 是更稳健的策略
-- 借用适合「有人出差不用，有人临时赶项目」的场景
+4. 加权外部消耗先扣预留池。
+5. 超出预留池的部分按比例压缩所有成员的 token 上限。
 
----
+`externalUsageWeight` 默认 `1`，表示完整计入外部消耗。调低该值会更信任本地代理账本，但也更容易让代理池高估剩余额度。
 
-## 三、风控安全策略
+## Reset 策略
 
-### 3.1 探针层
+官方同步启用时，本地统计窗口跟随官方 `resetTime`：
 
-1. **最小频率原则**：官方额度充足时 60min 刷新一次，这是 CC-Switch 也没有的保守策略
-2. **User-Agent 诚实**：使用 `KimiThinProxy/0.1 quota-check`，不伪装成 Kimi CLI
-3. **失败退避**：官方返回 429/503 时，下次刷新间隔翻倍（最高 4h）
-4. **静默刷新**：后台定时器刷新，不在请求路径上阻塞
+- reset 前：窗口起点为 `resetTime - windowMs`
+- reset 后：等待 `1 min` 缓冲，再把窗口起点切到 `resetTime`
+- 自动刷新在 reset 后绕过普通刷新间隔，尽快获取新官方窗口
 
-### 3.2 代理层
+未启用官方同步时，系统使用本地滚动窗口：
 
-1. **透传所有客户端特征**：UA、模型、参数原样转发
-2. **快速本地拒绝**：当官方额度耗尽时，本地直接 429，不转发到上游
-3. **并发控制**：全局 + 个人双限制，防止突发流量
-4. **无状态设计**：不修改请求体（不像 CC-Switch 的 Copilot 优化器那样做消息合并）
+- 5h：当前时间向前 5 小时
+- 7d：当前时间向前 7 天
 
-### 3.3 少量合租特化
+因此如果不启用官方同步，最好在官方刚 reset 后配置并开始使用 key，否则本地滚动窗口和官方窗口不会完全同相。
 
-| 人数 | 预留比例 | 每人占比 | 建议并发 | 说明 |
-|------|---------|---------|---------|------|
-| 2 人 | 10% | 45% | 2-3 | 最稳健，有充足缓冲 |
-| 3 人 | 15% | 28% | 1-2 | 需要更严格的本地限额 |
-| 4 人 | 20% | 20% | 1 | 接近官方并发上限 5，需小心 |
-| 5 人+ | 25% | 15% | 1 | 不推荐，风控风险高 |
+## 拦截顺序
 
----
+1. 全局并发超限：`global_concurrency_limit`
+2. 单 key 并发超限：`key_concurrency_limit`
+3. 官方 5h/7d 剩余为 0：`official_session_exhausted` / `official_weekly_exhausted`
+4. 个人 5h/7d 请求超限
+5. 个人 5h/7d token 超限
 
-## 四、实现文件清单
-
-| 文件 | 修改类型 | 内容 |
-|------|---------|------|
-| `server/officialUsage.js` | 增强 | 添加 `remainingPercent`, `health`, `secondsUntilReset` 计算 |
-| `server/store.js` | 增强 | 添加 `dynamicLimits`, `borrowEnabled`, `strictMode` 设置 |
-| `server/limits.js` | 重写 | 新增 `checkOfficialLimits` + `checkRollingLimits` 整合 |
-| `server/index.js` | 修改 | proxy 路由集成新限流逻辑；增强刷新策略 |
-| `src/main.tsx` | 增强 | 新的 `OfficialQuotaPane` 组件，展示剩余值和倒计时 |
-| `server/proxy.js` | 无需修改 | 透传逻辑已正确 |
-
----
-
-## 五、总结
-
-CC-Switch 的探针设计值得学习的是：**按 provider 类型自动路由到不同的凭据读取和 API 查询逻辑**。但它不做代理层限流——这是本项目的差异化价值。
-
-本设计的核心创新：
-1. **官方 remaining 作为硬上限** —— 这是从 CC-Switch 的「只读展示」进化到「驱动决策」
-2. **resetTime 驱动的动态刷新** —— 不是固定间隔，而是根据额度健康度自适应
-3. **双轨限流（软限额 + 硬限额）** —— 兼顾公平分配和风控安全
-4. **倒计时展示** —— 让用户知道「还有多久窗口刷新」，比单纯的百分比更有信息价值
+token 预检会把当前请求的输入 token 估算计入 projected usage，降低边界附近的透支概率。最终响应里的真实 usage 仍会进入审计日志，作为下一次检查的依据。
