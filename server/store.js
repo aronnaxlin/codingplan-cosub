@@ -17,10 +17,14 @@ export class Store {
         globalConcurrencyLimit: Number(process.env.GLOBAL_CONCURRENCY_LIMIT || 2),
         keepUsageDays: 45,
         quotaCheckEnabled: false,
-        quotaCheckIntervalMinutes: 60,
+        quotaCheckIntervalMinutes: 0,
+        quotaCheckOn429: true,
         quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
         memberCount: 2,
         reservePercent: 10,
+        strictMode: true,
+        borrowEnabled: false,
+        borrowCapPercent: 50,
         totalFiveHourRequestLimit: 1307,
         totalWeeklyRequestLimit: 9073,
         totalMonthlyRequestLimit: 36292,
@@ -310,6 +314,60 @@ export class Store {
     }
   }
 
+  /**
+   * Compute dynamic limits.
+   *
+   * Algorithm ("reverse-inferred total"):
+   *   Kimi API returns used/remaining as PERCENTAGES (limit is always 100).
+   *   At official refresh time we compute:
+   *     inferredTotal = totalLocalUsed / (officialUsed% / 100)
+   *   This value is stored on the official window and stays FIXED for the cycle.
+   *   Each person's token limit = inferredTotal * quotaPercent.
+   *   Local usage changes after refresh only affect the numerator.
+   *
+   *   Request limits still use static presets (official has no request data).
+   */
+  dynamicLimitsForKey(keyId, official) {
+    const key = this.getKey(keyId)
+    if (!key) return null
+
+    const baseQuota = this.quotaLimitsForKey(key)
+    const report = this.usageReport(key)
+    const stats = report.usage
+
+    const makeWindow = (windowName, officialWindow, baseReqLimit, baseTokenLimit) => {
+      // --- Request limit: no official data, use static preset ---
+      const reqUsed = Number(stats[windowName].requests || 0)
+
+      // --- Token limit: use the FIXED inferredTotal stored at refresh time ---
+      let tokenDynamicLimit = baseTokenLimit
+      let inferredTotal = null
+
+      if (officialWindow?.inferredTotal != null && officialWindow.inferredTotal > 0) {
+        inferredTotal = officialWindow.inferredTotal
+        const myPct = Math.max(0, Number(key.quotaPercent || 0)) / 100
+        tokenDynamicLimit = Math.max(1, Math.floor(inferredTotal * myPct))
+      }
+
+      const tokenUsed = Number(stats[windowName].tokens || 0)
+
+      return {
+        dynamicLimit: baseReqLimit,
+        remaining: Math.max(0, baseReqLimit - reqUsed),
+        tokenDynamicLimit,
+        tokenRemaining: Math.max(0, tokenDynamicLimit - tokenUsed),
+        officialRemaining: officialWindow?.remaining ?? null,
+        inferredTotal
+      }
+    }
+
+    return {
+      fiveHours: makeWindow('fiveHours', official?.session, baseQuota.fiveHours.requests, baseQuota.fiveHours.tokens),
+      week: makeWindow('week', official?.largestWindow, baseQuota.week.requests, baseQuota.week.tokens),
+      month: makeWindow('month', null, baseQuota.month.requests, baseQuota.month.tokens)
+    }
+  }
+
   async recordUsage(entry) {
     this.data.usage.unshift({
       id: crypto.randomUUID(),
@@ -329,6 +387,38 @@ export class Store {
   }
 
   async recordOfficialUsage(result) {
+    // Compute inferred totals at refresh time so they stay fixed for the cycle.
+    // Local usage changes after this point only affect the numerator, not the denominator.
+    if (result.ok && Array.isArray(result.windows)) {
+      for (const w of result.windows) {
+        if (w.used != null && w.used > 0) {
+          const windowName =
+            w.windowMs === 5 * 60 * 60 * 1000
+              ? 'fiveHours'
+              : w.windowMs === 7 * 24 * 60 * 60 * 1000
+                ? 'week'
+                : null
+          if (windowName) {
+            const totalLocalUsed = this.data.keys.reduce((sum, k) => {
+              const s = this.usageStats(k.id)
+              return sum + Number(s[windowName].tokens || 0)
+            }, 0)
+            const calculatedTotal = Math.round(totalLocalUsed / (w.used / 100))
+            const baseLimit =
+              windowName === 'fiveHours'
+                ? this.data.settings.totalFiveHourTokenLimit
+                : windowName === 'week'
+                  ? this.data.settings.totalWeeklyTokenLimit
+                  : this.data.settings.totalMonthlyTokenLimit
+            const minTotal = Math.floor(baseLimit * 0.5)
+            const maxTotal = Math.ceil(baseLimit * 1.5)
+            if (calculatedTotal >= minTotal && calculatedTotal <= maxTotal) {
+              w.inferredTotal = calculatedTotal
+            }
+          }
+        }
+      }
+    }
     this.data.officialUsage = result
     await this.save()
     return this.data.officialUsage
@@ -348,7 +438,10 @@ export class Store {
       this.data.settings.quotaCheckEnabled = Boolean(patch.quotaCheckEnabled)
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckIntervalMinutes')) {
-      this.data.settings.quotaCheckIntervalMinutes = Math.max(60, Number(patch.quotaCheckIntervalMinutes || 60))
+      this.data.settings.quotaCheckIntervalMinutes = Math.max(0, Number(patch.quotaCheckIntervalMinutes || 0))
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckOn429')) {
+      this.data.settings.quotaCheckOn429 = Boolean(patch.quotaCheckOn429)
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckUserAgent')) {
       this.data.settings.quotaCheckUserAgent = String(patch.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check')
@@ -358,6 +451,15 @@ export class Store {
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'reservePercent')) {
       this.data.settings.reservePercent = Math.max(0, Math.min(100, Number(patch.reservePercent ?? 10)))
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'strictMode')) {
+      this.data.settings.strictMode = Boolean(patch.strictMode)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'borrowEnabled')) {
+      this.data.settings.borrowEnabled = Boolean(patch.borrowEnabled)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'borrowCapPercent')) {
+      this.data.settings.borrowCapPercent = Math.max(0, Math.min(100, Number(patch.borrowCapPercent || 50)))
     }
     const numericSettings = [
       'totalFiveHourRequestLimit',

@@ -60,3 +60,38 @@ export function checkRollingLimits(store, key) {
   }
   return { ok: true, stats, limits }
 }
+
+/**
+ * Check official upstream quota as a hard ceiling.
+ *
+ * IMPORTANT: Kimi API returns wrapped/fake quota numbers (limit=100 is NOT
+ * real request count). We do NOT trust official remaining/limit/used for
+ * hard rejection. All rate-limiting is driven by local rolling limits
+ * (total*Limit settings) instead.
+ *
+ * This function is kept for forward compatibility and logging only.
+ * It always returns ok=true when quotaCheck is enabled and data is fresh.
+ */
+export function checkOfficialLimits(store, key) {
+  const official = store.data.officialUsage
+  const settings = store.data.settings
+
+  // Fail-open when official check is disabled or data unavailable
+  if (!settings.quotaCheckEnabled || !official || !official.ok) {
+    return { ok: true, source: 'disabled_or_unavailable' }
+  }
+
+  const now = Date.now()
+  const fetchedAt = official.fetchedAt ? new Date(official.fetchedAt).getTime() : 0
+  const ageMs = now - fetchedAt
+  const maxStaleMs = 30 * 60 * 1000 // 30 minutes — beyond this, data is too stale to trust
+
+  if (ageMs > maxStaleMs) {
+    return { ok: true, source: 'stale_data', staleMs: ageMs }
+  }
+
+  // NOTE: We intentionally do NOT reject based on official.remaining here
+  // because Kimi API returns encapsulated/fake numbers (e.g. limit=100).
+  // Real rate-limiting is done by checkRollingLimits using local presets.
+  return { ok: true, source: 'official_passed' }
+}

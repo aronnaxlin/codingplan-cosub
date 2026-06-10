@@ -3,7 +3,7 @@ import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
-import { ConcurrencyGate, checkRollingLimits } from './limits.js'
+import { ConcurrencyGate, checkRollingLimits, checkOfficialLimits } from './limits.js'
 import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, sanitizeSchema, upstreamUrl } from './proxy.js'
 import { fetchOfficialUsage } from './officialUsage.js'
 import { hashPassword, verifyPassword, createToken, requireAuth, requireAdmin } from './auth.js'
@@ -15,6 +15,8 @@ const upstreamKey = process.env.KIMI_API_KEY || ''
 const store = new Store(path.resolve(rootDir, process.env.DATA_FILE || './data/store.json'))
 const gate = new ConcurrencyGate()
 let lastOfficialAutoRefreshAt = 0
+let nextAllowedRefreshAt = 0
+const MIN_REFRESH_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes minimum between refreshes
 
 await store.load()
 
@@ -46,6 +48,10 @@ function dashboardStats() {
   const avgLatency = usage.length
     ? Math.round(usage.reduce((sum, item) => sum + Number(item.latencyMs || 0), 0) / usage.length)
     : 0
+
+  const official = store.data.officialUsage
+  const refreshInfo = computeRefreshInfo(official)
+
   return {
     totalKeys: keys.length,
     activeKeys: keys.filter((key) => key.active).length,
@@ -57,17 +63,83 @@ function dashboardStats() {
     avgLatency,
     concurrency: gate.snapshot(),
     hasUpstreamKey: Boolean(upstreamKey),
-    officialUsage: store.data.officialUsage,
+    officialUsage: official,
+    refreshInfo,
     settings: { ...store.data.settings, defaultQuotaPercent: store.defaultQuotaPercent() }
   }
 }
 
+function recomputeSecondsUntilReset(resetTime) {
+  if (!resetTime) return null
+  const ms = new Date(resetTime).getTime() - Date.now()
+  return ms > 0 ? Math.floor(ms / 1000) : 0
+}
+
+function computeRefreshInfo(official) {
+  const intervalMinutes = store.data.settings.quotaCheckIntervalMinutes || 0
+
+  // NOTE: Kimi API returns encapsulated/fake quota numbers (limit=100).
+  // remainingPercent is NOT trustworthy for real quota exhaustion.
+  // We only use resetTime (time-based) for adaptive refresh.
+  const minRemainingPercent = official?.ok
+    ? Math.min(
+        ...[official.session, official.largestWindow, official.weekly]
+          .filter(Boolean)
+          .map((w) => w.remainingPercent ?? 100)
+      )
+    : 100
+
+  // If auto-refresh is disabled, show manual/passive mode
+  if (intervalMinutes <= 0) {
+    return {
+      nextRefreshInSeconds: null,
+      intervalMinutes: 0,
+      reason: 'manual_only',
+      minRemainingPercent
+    }
+  }
+
+  if (!official || !official.ok) {
+    return { nextRefreshInSeconds: null, intervalMinutes, reason: 'no_data', minRemainingPercent }
+  }
+
+  const now = Date.now()
+  const minInterval = 5 * 60 * 1000
+  let intervalMs = intervalMinutes * 60 * 1000
+  let reason = 'healthy'
+
+  const windows = [official.session, official.largestWindow, official.weekly].filter(Boolean)
+
+  // Recompute secondsUntilReset based on CURRENT time (not stale cached value)
+  for (const w of windows) {
+    const secondsUntilReset = recomputeSecondsUntilReset(w.resetTime)
+    if (secondsUntilReset !== null && secondsUntilReset > 0 && secondsUntilReset < 600) {
+      intervalMs = minInterval
+      reason = 'near_reset'
+      break
+    }
+  }
+
+  const nextRefreshAt = lastOfficialAutoRefreshAt + intervalMs
+  const nextRefreshInSeconds = Math.max(0, Math.floor((nextRefreshAt - now) / 1000))
+
+  return {
+    nextRefreshInSeconds,
+    intervalMinutes: Math.round(intervalMs / 60000),
+    reason,
+    minRemainingPercent
+  }
+}
+
 async function refreshOfficialUsage() {
+  const now = Date.now()
+  nextAllowedRefreshAt = now + MIN_REFRESH_INTERVAL_MS
   const result = await fetchOfficialUsage({
     token: upstreamKey,
     userAgent: store.data.settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'
   })
   await store.recordOfficialUsage(result)
+  lastOfficialAutoRefreshAt = now
   return result
 }
 
@@ -125,7 +197,8 @@ app.post('/api/auth/password', requireAuth, async (req, res) => {
 app.get('/api/user/keys', requireAuth, (req, res) => {
   const keys = store.listKeysForUser(req.user.sub).map((key) => ({
     ...key,
-    ...store.usageReport(key)
+    ...store.usageReport(key),
+    dynamicLimits: store.dynamicLimitsForKey(key.id, store.data.officialUsage)
   }))
   res.json(keys)
 })
@@ -156,7 +229,11 @@ app.get('/api/admin/stats', requireAuth, requireAdmin, (_req, res) => {
 })
 
 app.get('/api/admin/keys', requireAuth, requireAdmin, (_req, res) => {
-  const keys = store.data.keys.map((key) => ({ ...store.publicKey(key), ...store.usageReport(key) }))
+  const keys = store.data.keys.map((key) => ({
+    ...store.publicKey(key),
+    ...store.usageReport(key),
+    dynamicLimits: store.dynamicLimitsForKey(key.id, store.data.officialUsage)
+  }))
   res.json(keys)
 })
 
@@ -216,6 +293,7 @@ app.get('/api/admin/official-usage', requireAuth, requireAdmin, (_req, res) => {
     quotaCheckIntervalMinutes: store.data.settings.quotaCheckIntervalMinutes,
     quotaCheckUserAgent: store.data.settings.quotaCheckUserAgent,
     hasUpstreamKey: Boolean(upstreamKey),
+    refreshInfo: computeRefreshInfo(store.data.officialUsage),
     data: store.data.officialUsage
   })
 })
@@ -234,22 +312,14 @@ app.post('/api/admin/official-usage/refresh', requireAuth, requireAdmin, async (
   res.status(result.ok ? 200 : 502).json(result)
 })
 
+// NOTE: Disabled — Kimi API returns encapsulated/fake quota numbers (limit=100).
+// We do NOT sync official limits into local presets because they are not real.
+// Local presets (total*Limit settings) remain the source of truth.
 app.post('/api/admin/official-usage/sync-totals', requireAuth, requireAdmin, async (_req, res) => {
-  if (!store.data.settings.quotaCheckEnabled) {
-    res.status(409).json({ error: 'official_quota_check_disabled' })
-    return
-  }
-  const official = store.data.officialUsage
-  if (!official?.ok) {
-    res.status(400).json({ error: 'official_usage_unavailable' })
-    return
-  }
-
-  const patch = {}
-  if (official.session?.limit) patch.totalFiveHourRequestLimit = official.session.limit
-  if (official.weekly?.limit) patch.totalWeeklyRequestLimit = official.weekly.limit
-  const settings = await store.updateSettings(patch)
-  res.json({ ...settings, defaultQuotaPercent: store.defaultQuotaPercent(), applied: patch })
+  res.status(409).json({
+    error: 'sync_totals_disabled',
+    message: 'Kimi API returns fake/encapsulated quota numbers. Local presets remain the source of truth.'
+  })
 })
 
 // ========== User management routes (admin only) ==========
@@ -378,28 +448,6 @@ app.all('/v1/*', async (req, res) => {
     return
   }
 
-  const rolling = checkRollingLimits(store, key)
-  if (!rolling.ok) {
-    status = 429
-    errorCode = rolling.reason
-    await store.recordUsage({
-      keyId: key.id,
-      keyName: key.name,
-      path: req.path,
-      method: req.method,
-      model,
-      status,
-      latencyMs: Date.now() - started,
-      inputTokens,
-      outputTokens: 0,
-      totalTokens: inputTokens,
-      userAgent,
-      errorCode
-    })
-    res.status(429).json({ error: rolling.reason, used: rolling.used, limit: rolling.limit })
-    return
-  }
-
   const globalLimit = Number(store.data.settings.globalConcurrencyLimit || 1)
   const concurrency = gate.canEnter(key.id, Number(key.concurrencyLimit || 1), globalLimit)
   if (!concurrency.ok) {
@@ -423,6 +471,54 @@ app.all('/v1/*', async (req, res) => {
     return
   }
 
+  const official = checkOfficialLimits(store, key)
+  if (!official.ok) {
+    status = 429
+    errorCode = official.reason
+    await store.recordUsage({
+      keyId: key.id,
+      keyName: key.name,
+      path: req.path,
+      method: req.method,
+      model,
+      status,
+      latencyMs: Date.now() - started,
+      inputTokens,
+      outputTokens: 0,
+      totalTokens: inputTokens,
+      userAgent,
+      errorCode
+    })
+    res.status(429).json({
+      error: official.reason,
+      message: official.message,
+      resetsAt: official.resetsAt || null
+    })
+    return
+  }
+
+  const rolling = checkRollingLimits(store, key)
+  if (!rolling.ok) {
+    status = 429
+    errorCode = rolling.reason
+    await store.recordUsage({
+      keyId: key.id,
+      keyName: key.name,
+      path: req.path,
+      method: req.method,
+      model,
+      status,
+      latencyMs: Date.now() - started,
+      inputTokens,
+      outputTokens: 0,
+      totalTokens: inputTokens,
+      userAgent,
+      errorCode
+    })
+    res.status(429).json({ error: rolling.reason, used: rolling.used, limit: rolling.limit })
+    return
+  }
+
   gate.enter(key.id)
   try {
     const responseChunks = []
@@ -440,9 +536,11 @@ app.all('/v1/*', async (req, res) => {
       }
     })
 
+    let responseBodyText = ''
     if (responseChunks.length) {
       try {
-        const parsed = JSON.parse(Buffer.concat(responseChunks).toString('utf8'))
+        responseBodyText = Buffer.concat(responseChunks).toString('utf8')
+        const parsed = JSON.parse(responseBodyText)
         console.log('[upstream]', req.path, status, JSON.stringify(parsed).slice(0, 800))
         if (parsed.usage) {
           inputTokens = Number(parsed.usage.prompt_tokens || parsed.usage.input_tokens || inputTokens || 0)
@@ -455,6 +553,11 @@ app.all('/v1/*', async (req, res) => {
       }
     } else {
       totalTokens = inputTokens
+    }
+
+    // Passive probe: trigger official usage refresh on upstream 429
+    if (status === 429) {
+      maybeRefreshOn429(status, responseBodyText || errorCode)
     }
   } catch (error) {
     status = 502
@@ -496,10 +599,65 @@ app.listen(port, () => {
 
 setInterval(() => {
   if (!store.data.settings.quotaCheckEnabled) return
-  const intervalMs = Math.max(60, Number(store.data.settings.quotaCheckIntervalMinutes || 60)) * 60 * 1000
-  if (Date.now() - lastOfficialAutoRefreshAt < intervalMs) return
-  lastOfficialAutoRefreshAt = Date.now()
+
+  const intervalMinutes = store.data.settings.quotaCheckIntervalMinutes || 0
+  if (intervalMinutes <= 0) return // Auto-refresh disabled; rely on manual + 429 triggers
+
+  const now = Date.now()
+
+  // SPECIAL: If any window has just reset (secondsUntilReset <= 0), force refresh
+  // immediately regardless of cooldown. This ensures we pick up the new quota
+  // as soon as the reset time arrives.
+  const official = store.data.officialUsage
+  const anyWindowJustReset =
+    official?.ok &&
+    [official.session, official.largestWindow, official.weekly]
+      .filter(Boolean)
+      .some((w) => recomputeSecondsUntilReset(w.resetTime) === 0)
+
+  if (!anyWindowJustReset && now < nextAllowedRefreshAt) return
+
+  const intervalMs = intervalMinutes * 60 * 1000
+  if (!anyWindowJustReset && now - lastOfficialAutoRefreshAt < intervalMs) return
+
+  if (anyWindowJustReset) {
+    console.log('[refresh] window reset detected, forcing immediate refresh')
+  }
+
+  nextAllowedRefreshAt = now + MIN_REFRESH_INTERVAL_MS
   refreshOfficialUsage().catch((error) => {
     console.warn(`official usage refresh failed: ${error.message}`)
+    // Backoff on failure: push last refresh time back so next retry waits longer
+    const backoffMs = Math.min(intervalMs * 2, 4 * 60 * 60 * 1000)
+    lastOfficialAutoRefreshAt = now - intervalMs + backoffMs
   })
 }, 60 * 1000)
+
+/**
+ * Passive trigger: when upstream returns 429 (quota exhausted), immediately
+ * refresh official usage so subsequent requests see fresh limits.
+ * Respects nextAllowedRefreshAt to avoid thundering herd.
+ */
+function maybeRefreshOn429(status, errorBody) {
+  if (!store.data.settings.quotaCheckEnabled) return
+  if (!store.data.settings.quotaCheckOn429) return
+  if (status !== 429) return
+
+  const isQuotaError =
+    typeof errorBody === 'string' &&
+    /quota|limit|rate|exhausted|too many requests/i.test(errorBody)
+
+  if (!isQuotaError) return
+
+  const now = Date.now()
+  if (now < nextAllowedRefreshAt) {
+    console.log('[probe] 429 detected but refresh rate-limited, skipping')
+    return
+  }
+
+  console.log('[probe] 429 quota error detected, triggering passive refresh')
+  nextAllowedRefreshAt = now + MIN_REFRESH_INTERVAL_MS
+  refreshOfficialUsage().catch((error) => {
+    console.warn(`[probe] passive refresh failed: ${error.message}`)
+  })
+}

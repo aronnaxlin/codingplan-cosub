@@ -54,6 +54,21 @@ type QuotaWindow = {
   tokens: number
 }
 
+type DynamicWindow = {
+  dynamicLimit: number
+  remaining: number
+  tokenDynamicLimit: number
+  tokenRemaining: number
+  officialRemaining: number | null
+  inferredTotal: number | null
+}
+
+type DynamicLimits = {
+  fiveHours: DynamicWindow
+  week: DynamicWindow
+  month: DynamicWindow
+} | null
+
 type ProxyKey = {
   id: string
   name: string
@@ -82,6 +97,7 @@ type ProxyKey = {
     week: QuotaWindow
     month: QuotaWindow
   }
+  dynamicLimits: DynamicLimits
 }
 
 type UsageEntry = {
@@ -112,6 +128,7 @@ type Stats = {
   avgLatency: number
   hasUpstreamKey: boolean
   officialUsage: OfficialUsage | null
+  refreshInfo: RefreshInfo
   settings: SettingsState
   concurrency: {
     globalActive: number
@@ -125,9 +142,13 @@ type SettingsState = {
   keepUsageDays: number
   quotaCheckEnabled: boolean
   quotaCheckIntervalMinutes: number
+  quotaCheckOn429: boolean
   quotaCheckUserAgent: string
   memberCount: number
   reservePercent: number
+  strictMode: boolean
+  borrowEnabled: boolean
+  borrowCapPercent: number
   defaultQuotaPercent: number
   totalFiveHourRequestLimit: number
   totalWeeklyRequestLimit: number
@@ -143,7 +164,10 @@ type OfficialQuota = {
   used: number | null
   remaining: number | null
   percentUsed: number | null
+  remainingPercent: number | null
   resetTime: string | null
+  secondsUntilReset: number | null
+  health: 'healthy' | 'warning' | 'critical' | 'unknown'
 }
 
 type OfficialUsage = {
@@ -157,6 +181,13 @@ type OfficialUsage = {
   session?: (OfficialQuota & { windowMs?: number | null }) | null
   largestWindow?: (OfficialQuota & { windowMs?: number | null }) | null
   parallelLimit?: number | null
+}
+
+type RefreshInfo = {
+  nextRefreshInSeconds: number | null
+  intervalMinutes: number
+  reason: string
+  minRemainingPercent: number
 }
 
 const defaultKeyForm = {
@@ -221,6 +252,27 @@ function fmtDate(value?: string | null) {
 function percent(used: number, limit: number) {
   if (!limit) return 0
   return Math.min(100, Math.round((used / limit) * 100))
+}
+
+function fmtCountdown(seconds: number | null): string {
+  if (seconds === null || seconds < 0) return '未知'
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (d > 0) return `${d}天${h}小时${m}分`
+  if (h > 0) return `${h}小时${m}分${s}秒`
+  if (m > 0) return `${m}分${s}秒`
+  return `${s}秒`
+}
+
+function healthClass(health?: string) {
+  switch (health) {
+    case 'healthy': return 'health-healthy'
+    case 'warning': return 'health-warning'
+    case 'critical': return 'health-critical'
+    default: return 'health-unknown'
+  }
 }
 
 function classNames(...items: Array<string | false | undefined>) {
@@ -794,12 +846,12 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
                         <Copy size={14} />
                       </button>
                     </div>
-                    <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} />
-                    <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} />
-                    <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} />
-                    <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} />
-                    <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} />
-                    <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} />
+                    <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} dynamic={key.dynamicLimits?.fiveHours} />
+                    <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} dynamic={key.dynamicLimits?.fiveHours} isToken />
+                    <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} dynamic={key.dynamicLimits?.week} />
+                    <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} dynamic={key.dynamicLimits?.week} isToken />
+                    <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} dynamic={key.dynamicLimits?.month} />
+                    <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} dynamic={key.dynamicLimits?.month} isToken />
                   </article>
                 ))}
               </div>
@@ -886,7 +938,7 @@ function Dashboard({
           )
         })}
       </div>
-      <OfficialUsagePanel officialUsage={officialUsage} refreshOfficialUsage={refreshOfficialUsage} />
+      <OfficialUsagePanel officialUsage={officialUsage} refreshInfo={stats.refreshInfo} refreshOfficialUsage={refreshOfficialUsage} />
       <section className="panel">
         <div className="panel-heading">
           <h2>成员窗口使用</h2>
@@ -904,12 +956,12 @@ function Dashboard({
                   </span>
                 </div>
               </div>
-              <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} />
-              <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} />
-              <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} />
-              <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} />
-              <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} />
-              <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} />
+              <QuotaLine label="5h 请求" used={key.usage.fiveHours.requests} limit={key.limits.fiveHours.requests} dynamic={key.dynamicLimits?.fiveHours} />
+              <QuotaLine label="5h Token" used={key.usage.fiveHours.tokens} limit={key.limits.fiveHours.tokens} dynamic={key.dynamicLimits?.fiveHours} isToken />
+              <QuotaLine label="7d 请求" used={key.usage.week.requests} limit={key.limits.week.requests} dynamic={key.dynamicLimits?.week} />
+              <QuotaLine label="7d Token" used={key.usage.week.tokens} limit={key.limits.week.tokens} dynamic={key.dynamicLimits?.week} isToken />
+              <QuotaLine label="30d 请求" used={key.usage.month.requests} limit={key.limits.month.requests} dynamic={key.dynamicLimits?.month} />
+              <QuotaLine label="30d Token" used={key.usage.month.tokens} limit={key.limits.month.tokens} dynamic={key.dynamicLimits?.month} isToken />
             </article>
           ))}
         </div>
@@ -920,9 +972,11 @@ function Dashboard({
 
 function OfficialUsagePanel({
   officialUsage,
+  refreshInfo,
   refreshOfficialUsage
 }: {
   officialUsage: OfficialUsage | null
+  refreshInfo: RefreshInfo
   refreshOfficialUsage: () => Promise<void>
 }) {
   const ok = officialUsage?.ok
@@ -930,8 +984,12 @@ function OfficialUsagePanel({
     <section className="panel">
       <div className="panel-heading">
         <div>
-          <h2>官方额度检查</h2>
-          <span>每 1 小时自动刷新一次，主要依赖手动刷新；请求使用管理端透明身份。</span>
+          <h2>官方实时额度</h2>
+          <span>
+            {refreshInfo.intervalMinutes <= 0
+              ? '被动模式：手动刷新 + 429 触发'
+              : `自适应刷新：${refreshInfo.intervalMinutes}分钟 / 下次刷新：${fmtCountdown(refreshInfo.nextRefreshInSeconds)}`}
+          </span>
         </div>
         <button className="ghost-button" onClick={() => void refreshOfficialUsage()}>
           <RefreshCw size={16} />
@@ -942,15 +1000,15 @@ function OfficialUsagePanel({
         <p className="muted-text">尚未刷新。该功能默认关闭，需在设置页启用后才会请求 Kimi Code `/coding/v1/usages`。</p>
       ) : ok ? (
         <div className="official-grid">
-          <OfficialQuotaCard title="5h 窗口" quota={officialUsage.session} />
-          <OfficialQuotaCard title="周额度" quota={officialUsage.weekly} />
-          <article className="official-card">
+          <OfficialQuotaCard title="5h 会话窗口" quota={officialUsage.session} />
+          <OfficialQuotaCard title="7d 周期窗口" quota={officialUsage.largestWindow} />
+          <article className="official-card compact">
             <span>并发上限</span>
             <strong>{officialUsage.parallelLimit ?? '-'}</strong>
-            <small>官方返回 parallel.limit</small>
+            <small>官方 parallel.limit</small>
           </article>
-          <article className="official-card">
-            <span>刷新时间</span>
+          <article className="official-card compact">
+            <span>上次刷新</span>
             <strong>{fmtDate(officialUsage.fetchedAt)}</strong>
             <small>{officialUsage.userAgent || 'KimiThinProxy/0.1 quota-check'}</small>
           </article>
@@ -967,35 +1025,89 @@ function OfficialUsagePanel({
 }
 
 function OfficialQuotaCard({ title, quota }: { title: string; quota?: OfficialQuota | null }) {
-  const used = quota?.used ?? 0
   const limit = quota?.limit ?? 0
+  const used = quota?.used ?? 0
   const pct = quota?.percentUsed ?? percent(used, limit)
+  const health = quota?.health || 'unknown'
+  const countdown = quota?.secondsUntilReset ?? null
   return (
-    <article className="official-card">
-      <span>{title}</span>
-      <strong>{limit ? `${pct}%` : '-'}</strong>
-      <small>
-        {limit ? `${fmtNumber(used)} / ${fmtNumber(limit)}` : '无官方数据'}
-        {quota?.resetTime ? ` · ${fmtDate(quota.resetTime)} 重置` : ''}
-      </small>
+    <article className={classNames('official-card', healthClass(health))}>
+      <div className="official-card-header">
+        <span>{title}</span>
+        <span className={classNames('health-dot', healthClass(health))} />
+      </div>
+      <div className="official-card-body">
+        <div className="official-metric">
+          <strong>{fmtNumber(used)} / {limit ? fmtNumber(limit) : '-'}</strong>
+          <small>封装数据 · 非真实配额</small>
+        </div>
+        <div className="official-metric secondary">
+          <span>{pct}% 显示已用</span>
+        </div>
+      </div>
+      {countdown !== null && countdown > 0 && (
+        <div className="official-countdown">
+          <Clock size={12} />
+          <small>窗口重置：{fmtCountdown(countdown)}后</small>
+        </div>
+      )}
       <div className="progress">
-        <span style={{ width: `${pct || 0}%` }} />
+        <span className={healthClass(health)} style={{ width: `${pct || 0}%` }} />
       </div>
     </article>
   )
 }
 
-function QuotaLine({ label, used, limit }: { label: string; used: number; limit: number }) {
+function QuotaLine({
+  label,
+  used,
+  limit,
+  dynamic,
+  isToken
+}: {
+  label: string
+  used: number
+  limit: number
+  dynamic?: DynamicWindow | null
+  isToken?: boolean
+}) {
+  const hasDynamic = dynamic && (
+    isToken ? dynamic.tokenDynamicLimit > 0 : dynamic.dynamicLimit > 0
+  )
+  const dynamicRemaining = hasDynamic
+    ? (isToken ? dynamic.tokenRemaining : dynamic.remaining)
+    : null
+  const displayLimit = hasDynamic
+    ? (isToken ? dynamic.tokenDynamicLimit : dynamic.dynamicLimit)
+    : limit
+  const barPct = percent(used, displayLimit)
+  const rawPct = displayLimit > 0 ? Math.round((used / displayLimit) * 100) : 0
+
   return (
     <div className="quota-line">
       <div>
         <span>{label}</span>
         <small>
-          {fmtNumber(used)} / {limit ? fmtNumber(limit) : '不限'} · {percent(used, limit)}%
+          {fmtNumber(used)} / {displayLimit ? fmtNumber(displayLimit) : '不限'} · {rawPct}%
+          {hasDynamic && dynamicRemaining !== null && (
+            <span className="dynamic-hint">
+              {' '}
+              · 剩余 {fmtNumber(dynamicRemaining)}
+              {isToken && dynamic?.inferredTotal && (
+                <span> (推算总量 {fmtNumber(dynamic.inferredTotal)})</span>
+              )}
+            </span>
+          )}
         </small>
       </div>
       <div className="progress">
-        <span style={{ width: `${percent(used, limit)}%` }} />
+        <span
+          className={classNames(
+            hasDynamic && (isToken ? dynamic!.tokenRemaining : dynamic!.remaining) <= 0 && 'health-critical',
+            rawPct > 100 && 'health-warning'
+          )}
+          style={{ width: `${Math.min(100, barPct)}%` }}
+        />
       </div>
     </div>
   )
@@ -1316,10 +1428,10 @@ function SettingsPage({
         </label>
         <div className="form-grid">
           <label>
-            自动刷新间隔分钟
+            自动刷新间隔分钟（0 = 禁用定时刷新）
             <input
               type="number"
-              min={60}
+              min={0}
               value={settings.quotaCheckIntervalMinutes}
               onChange={(event) => setSettings({ ...settings, quotaCheckIntervalMinutes: Number(event.target.value) })}
             />
@@ -1332,6 +1444,14 @@ function SettingsPage({
             />
           </label>
         </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={settings.quotaCheckOn429}
+            onChange={(event) => setSettings({ ...settings, quotaCheckOn429: event.target.checked })}
+          />
+          上游返回 429 时自动刷新官方额度（被动触发）
+        </label>
         <div className="preset-row">
           <button
             type="button"
@@ -1352,7 +1472,10 @@ function SettingsPage({
           </button>
         </div>
         <p className="muted-text">
-          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。这个请求不代表 A/B 任一 proxy key；关闭时不会请求上游。
+          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。
+          {settings.quotaCheckIntervalMinutes > 0
+            ? `定时刷新每 ${settings.quotaCheckIntervalMinutes} 分钟一次。`
+            : '定时刷新已禁用，仅通过手动刷新和 429 被动触发查询官方额度。'}
         </p>
         <div className="panel-heading compact-heading">
           <h2>额度分配</h2>
@@ -1388,6 +1511,38 @@ function SettingsPage({
             应用到所有 Key
           </button>
         </div>
+        <div className="panel-heading compact-heading">
+          <h2>官方额度限流策略</h2>
+          <span>严格模式用官方剩余额度作为动态硬上限；借用模式允许额度不足时有限透支。</span>
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={settings.strictMode}
+            onChange={(event) => setSettings({ ...settings, strictMode: event.target.checked })}
+          />
+          严格模式（官方剩余驱动动态上限）
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={settings.borrowEnabled}
+            onChange={(event) => setSettings({ ...settings, borrowEnabled: event.target.checked })}
+          />
+          允许借用（个人超限时，若全局有余量可透支）
+        </label>
+        {settings.borrowEnabled && (
+          <label>
+            借用上限 %（个人基础配额的倍数）
+            <input
+              type="number"
+              min={0}
+              max={200}
+              value={settings.borrowCapPercent}
+              onChange={(event) => setSettings({ ...settings, borrowCapPercent: Number(event.target.value) })}
+            />
+          </label>
+        )}
         <div className="panel-heading compact-heading">
           <h2>账号总池</h2>
           <span>每个 proxy key 的硬上限 = 总池 × 占比。</span>

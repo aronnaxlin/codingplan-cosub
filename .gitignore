@@ -6,3 +6,4 @@ work/
 .env
 .DS_Store
 outputs/
+prompt.md

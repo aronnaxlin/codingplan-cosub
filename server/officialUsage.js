@@ -18,12 +18,17 @@ function parseQuota(detail) {
   const remaining = toNumber(detail.remaining)
   if (used === null && limit !== null && remaining !== null) used = limit - remaining
   const percentUsed = limit && used !== null ? Math.max(0, Math.min(100, Math.round((used / limit) * 100))) : null
+  const remainingPercent = limit && remaining !== null ? Math.max(0, Math.min(100, Math.round((remaining / limit) * 100))) : null
+  const resetTime = parseReset(detail.resetTime || detail.reset_at || detail.resetAt || detail.reset_time)
   return {
     limit,
     used,
     remaining,
     percentUsed,
-    resetTime: parseReset(detail.resetTime || detail.reset_at || detail.resetAt || detail.reset_time)
+    remainingPercent,
+    resetTime,
+    secondsUntilReset: resetTime ? Math.max(0, Math.floor((new Date(resetTime).getTime() - Date.now()) / 1000)) : null,
+    health: remainingPercent === null ? 'unknown' : remainingPercent > 30 ? 'healthy' : remainingPercent > 5 ? 'warning' : 'critical'
   }
 }
 
@@ -58,10 +63,22 @@ export function parseOfficialUsage(data) {
       return av - bv
     })
 
+  // Kimi API: `usage` field contains the larger period (e.g., weekly/7d).
+  // When `limits` only has one entry (5h), we need `usage` as the second
+  // window so that `largestWindow` points to the 7d data, not the 5h data.
+  const usageQuota = parseQuota(data?.usage)
+  if (usageQuota) {
+    windows.push({
+      ...usageQuota,
+      windowMs: Number.MAX_SAFE_INTEGER,
+      rawWindow: { duration: 7, timeUnit: 'DAY' }
+    })
+  }
+
   return {
     fetchedAt: new Date().toISOString(),
     plan: data?.user?.membership?.level || null,
-    weekly: parseQuota(data?.usage),
+    weekly: usageQuota,
     windows,
     session: windows[0] || null,
     largestWindow: windows[windows.length - 1] || null,

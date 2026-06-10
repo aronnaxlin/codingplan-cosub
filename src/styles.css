@@ -489,14 +489,15 @@ button {
 
 .official-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
 .official-card {
-  display: grid;
-  gap: 8px;
-  min-height: 118px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 140px;
   padding: 14px;
   border: 1px solid #dfe5ee;
   border-radius: 10px;
@@ -509,6 +510,84 @@ button {
   box-shadow: 0 4px 12px rgba(26, 36, 50, 0.05);
   border-color: #c9d9ed;
 }
+
+.official-card.compact {
+  min-height: auto;
+  gap: 6px;
+}
+
+.official-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.official-card-header span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.official-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.official-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.official-metric .remaining {
+  font-size: 26px;
+  font-weight: 700;
+  color: #18202a;
+}
+
+.official-metric small {
+  color: #667385;
+  font-size: 13px;
+}
+
+.official-metric.secondary {
+  flex-direction: row;
+  gap: 8px;
+  font-size: 13px;
+  color: #667385;
+}
+
+.official-countdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #667385;
+  font-size: 12px;
+}
+
+.health-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.health-healthy { border-color: #86efac; }
+.health-healthy .health-dot { background: #22c55e; }
+.health-healthy .progress span { background: linear-gradient(90deg, #22c55e, #4ade80); }
+
+.health-warning { border-color: #fcd34d; }
+.health-warning .health-dot { background: #f59e0b; }
+.health-warning .progress span { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+
+.health-critical { border-color: #fca5a5; }
+.health-critical .health-dot { background: #ef4444; }
+.health-critical .progress span { background: linear-gradient(90deg, #ef4444, #f87171); }
+
+.health-unknown { border-color: #cbd5e1; }
+.health-unknown .health-dot { background: #94a3b8; }
 
 .official-card span,
 .official-card small,
@@ -556,6 +635,11 @@ button {
 
 .quota-line small {
   color: #667385;
+}
+
+.dynamic-hint {
+  color: #2166a8;
+  font-weight: 650;
 }
 
 .progress {
@@ -835,11 +919,6 @@ label {
   min-height: 18px;
   cursor: pointer;
   accent-color: #2166a8;
-  transition: transform 0.15s ease;
-}
-
-.checkbox-row input:hover {
-  transform: scale(1.1);
 }
 
 .ua-cell {
@@ -996,6 +1075,12 @@ label {
 
   .official-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .official-grid {
+    grid-template-columns: 1fr;
   }
 }
 
