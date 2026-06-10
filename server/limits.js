@@ -97,7 +97,7 @@ export function checkOfficialLimits(store, key) {
         ok: false,
         source: 'official',
         reason,
-        message: 'Kimi official quota window is exhausted.',
+        message: 'The official quota window is exhausted.',
         resetsAt: window.resetTime || null
       }
     }

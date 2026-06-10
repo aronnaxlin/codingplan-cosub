@@ -1,5 +1,5 @@
 #!/bin/bash
-# Safe deployment script for kimi-codingplan-cosub
+# Safe deployment script for coding-plan-proxy
 # Usage: ./deploy.sh user@server:/path/to/app
 #
 # This script:
@@ -25,16 +25,16 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # Copy only deployable files
-mkdir -p "$TMPDIR/kimi-codingplan-cosub"
-cp -r server/ "$TMPDIR/kimi-codingplan-cosub/"
-cp -r dist/ "$TMPDIR/kimi-codingplan-cosub/"
-cp package*.json "$TMPDIR/kimi-codingplan-cosub/"
-cp Dockerfile "$TMPDIR/kimi-codingplan-cosub/" 2>/dev/null || true
-cp docker-compose.yml "$TMPDIR/kimi-codingplan-cosub/" 2>/dev/null || true
-cp .env.example "$TMPDIR/kimi-codingplan-cosub/"
+mkdir -p "$TMPDIR/coding-plan-proxy"
+cp -r server/ "$TMPDIR/coding-plan-proxy/"
+cp -r dist/ "$TMPDIR/coding-plan-proxy/"
+cp package*.json "$TMPDIR/coding-plan-proxy/"
+cp Dockerfile "$TMPDIR/coding-plan-proxy/" 2>/dev/null || true
+cp docker-compose.yml "$TMPDIR/coding-plan-proxy/" 2>/dev/null || true
+cp .env.example "$TMPDIR/coding-plan-proxy/"
 
 cd "$TMPDIR"
-tar czf deploy.tar.gz kimi-codingplan-cosub/
+tar czf deploy.tar.gz coding-plan-proxy/
 
 echo "[3/4] Uploading to $REMOTE_PATH ..."
 scp deploy.tar.gz "$REMOTE_PATH/../deploy.tar.gz"
@@ -51,9 +51,9 @@ ssh "${REMOTE_PATH%%:*}" "
   npm ci --omit=dev && \
   echo 'Restarting app...' && \
   # If using pm2:
-  # pm2 restart kimi-codingplan-cosub || pm2 start server/index.js --name kimi-codingplan-cosub || \
+  # pm2 restart coding-plan-proxy || pm2 start server/index.js --name coding-plan-proxy || \
   # If using systemd:
-  # sudo systemctl restart kimi-codingplan-cosub || \
+  # sudo systemctl restart coding-plan-proxy || \
   # If using docker:
   # docker compose up -d --build || \
   echo 'Done. Please restart the app manually if not using pm2/systemd/docker.'

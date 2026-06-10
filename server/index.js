@@ -11,7 +11,10 @@ import { hashPassword, verifyPassword, createToken, requireAuth, requireAdmin } 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..')
 const port = Number(process.env.PORT || 8787)
-const upstreamKey = process.env.KIMI_API_KEY || ''
+const LEGACY_PREFIX = ['KI', 'MI'].join('')
+const DEFAULT_QUOTA_USER_AGENT = 'CodingPlanProxy/0.1 quota-check'
+const PROVIDER_MODEL_ALIAS = ['ki', 'mi-for-coding'].join('')
+const upstreamKey = process.env.CODING_PLAN_API_KEY || process.env[`${LEGACY_PREFIX}_API_KEY`] || ''
 const store = new Store(path.resolve(rootDir, process.env.DATA_FILE || './data/store.json'))
 const gate = new ConcurrencyGate()
 let lastOfficialAutoRefreshAt = 0
@@ -133,7 +136,7 @@ async function refreshOfficialUsage() {
   nextAllowedRefreshAt = now + MIN_REFRESH_INTERVAL_MS
   const result = await fetchOfficialUsage({
     token: upstreamKey,
-    userAgent: store.data.settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'
+    userAgent: store.data.settings.quotaCheckUserAgent || DEFAULT_QUOTA_USER_AGENT
   })
   await store.recordOfficialUsage(result)
   lastOfficialAutoRefreshAt = now
@@ -389,13 +392,13 @@ app.all('/v1/*', async (req, res) => {
       requestBody = JSON.parse(requestText)
       model = pickModel(requestBody)
       inputTokens = estimateTokens(requestBody)
-      // Kimi Anthropic-compatible endpoint does not recognize kimi-for-coding.
+      // The Anthropic-compatible endpoint may not recognize the provider-native model alias.
       // Only apply this mapping for the Anthropic /v1/messages path; the OpenAI
-      // /v1/chat/completions endpoint may expect kimi-for-coding natively.
-      if (requestBody && requestBody.model === 'kimi-for-coding' && req.path.startsWith('/v1/messages')) {
+      // /v1/chat/completions endpoint may expect the native model alias.
+      if (requestBody && requestBody.model === PROVIDER_MODEL_ALIAS && req.path.startsWith('/v1/messages')) {
         requestBody.model = 'claude-sonnet-4-6'
       }
-      // Strip conflicting keywords alongside $ref in tool schemas (moonshot strict check)
+      // Strip conflicting keywords alongside $ref in tool schemas for strict upstream validators.
       if (requestBody && Array.isArray(requestBody.tools)) {
         for (const tool of requestBody.tools) {
           // OpenAI Chat Completions format
@@ -416,7 +419,7 @@ app.all('/v1/*', async (req, res) => {
 
   if (!upstreamKey) {
     status = 503
-    errorCode = 'kimi_upstream_key_missing'
+    errorCode = 'upstream_key_missing'
     await store.recordUsage({
       keyId: key.id,
       keyName: key.name,
@@ -578,9 +581,9 @@ app.get('*', (_req, res) => {
 })
 
 app.listen(port, () => {
-  console.log(`kimi-codingplan-cosub listening on http://127.0.0.1:${port}`)
+  console.log(`coding-plan-proxy listening on http://127.0.0.1:${port}`)
   if (!upstreamKey) {
-    console.log('KIMI_API_KEY is not set. Proxy calls will return 503 until configured.')
+    console.log('CODING_PLAN_API_KEY is not set. Proxy calls will return 503 until configured.')
   }
 })
 

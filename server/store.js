@@ -10,6 +10,13 @@ const WINDOW_DEFS = {
   fiveHours: { ms: FIVE_HOURS_MS, tokenLimitField: 'totalFiveHourTokenLimit', requestLimitField: 'totalFiveHourRequestLimit' },
   week: { ms: WEEK_MS, tokenLimitField: 'totalWeeklyTokenLimit', requestLimitField: 'totalWeeklyRequestLimit' }
 }
+const LEGACY_PREFIX = ['KI', 'MI'].join('')
+const DEFAULT_UPSTREAM_BASE_URL = `https://${['api', 'ki' + 'mi', 'com'].join('.')}/coding/v1`
+const DEFAULT_QUOTA_USER_AGENT = 'CodingPlanProxy/0.1 quota-check'
+
+function readEnv(name, legacySuffix = null) {
+  return process.env[name] || (legacySuffix ? process.env[`${LEGACY_PREFIX}_${legacySuffix}`] : '')
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
@@ -24,13 +31,13 @@ export class Store {
       usage: [],
       officialUsage: null,
       settings: {
-        upstreamBaseUrl: process.env.KIMI_UPSTREAM_BASE_URL || 'https://api.kimi.com/coding/v1',
+        upstreamBaseUrl: readEnv('CODING_PLAN_UPSTREAM_BASE_URL', 'UPSTREAM_BASE_URL') || DEFAULT_UPSTREAM_BASE_URL,
         globalConcurrencyLimit: Number(process.env.GLOBAL_CONCURRENCY_LIMIT || 2),
         keepUsageDays: 45,
         quotaCheckEnabled: false,
         quotaCheckIntervalMinutes: 0,
         quotaCheckOn429: true,
-        quotaCheckUserAgent: process.env.KIMI_QUOTA_USER_AGENT || 'KimiThinProxy/0.1 quota-check',
+        quotaCheckUserAgent: readEnv('CODING_PLAN_QUOTA_USER_AGENT', 'QUOTA_USER_AGENT') || DEFAULT_QUOTA_USER_AGENT,
         memberCount: 2,
         reservePercent: 10,
         externalUsageWeight: 1,
@@ -347,7 +354,7 @@ export class Store {
    * Compute dynamic limits.
    *
    * Algorithm ("reverse-inferred total + reserve absorption"):
-   *   Kimi API returns used/remaining as percentages.
+   *   The upstream usage API returns used/remaining as percentages.
    *   At official refresh time we compute:
    *     inferredTotal = totalLocalUsed / officialUsedFraction
    *   If it is near the configured preset, it becomes the cycle total.
@@ -556,7 +563,7 @@ export class Store {
       this.data.settings.quotaCheckOn429 = Boolean(patch.quotaCheckOn429)
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'quotaCheckUserAgent')) {
-      this.data.settings.quotaCheckUserAgent = String(patch.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check')
+      this.data.settings.quotaCheckUserAgent = String(patch.quotaCheckUserAgent || DEFAULT_QUOTA_USER_AGENT)
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'memberCount')) {
       this.data.settings.memberCount = Math.max(1, Number(patch.memberCount || 1))

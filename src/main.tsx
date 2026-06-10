@@ -198,14 +198,14 @@ const defaultKeyForm = {
 
 const quotaPresets = {
   andante: {
-    label: 'Kimi Code Andante',
+    label: 'Code Andante',
     totalFiveHourRequestLimit: 359,
     totalWeeklyRequestLimit: 639,
     totalFiveHourTokenLimit: 15000000,
     totalWeeklyTokenLimit: 21000000
   },
   allegretto: {
-    label: 'Kimi Code Allegretto',
+    label: 'Code Allegretto',
     totalFiveHourRequestLimit: 1307,
     totalWeeklyRequestLimit: 9073,
     totalFiveHourTokenLimit: 65000000,
@@ -321,7 +321,7 @@ function LoginPage({ onLogin }: { onLogin: (auth: AuthState) => void }) {
         <div className="brand-mark">
           <ShieldCheck size={28} />
         </div>
-        <h1>kimi-codingplan-cosub</h1>
+        <h1>coding-plan-proxy</h1>
         <p>输入账号密码登录管理面板。</p>
         {error && <div className="notice">{error}</div>}
         <label>
@@ -515,7 +515,7 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
             <ShieldCheck size={22} />
           </div>
           <div className="sidebar-brand-text">
-            <strong>kimi-codingplan-cosub</strong>
+            <strong>coding-plan-proxy</strong>
             <span>internal quota gateway</span>
           </div>
           <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? '展开' : '收起'}>
@@ -567,7 +567,7 @@ function AdminApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void })
           </div>
           <div className={classNames('status-pill', stats?.hasUpstreamKey ? 'ok' : 'warn')}>
             {stats?.hasUpstreamKey ? <Check size={16} /> : <AlertTriangle size={16} />}
-            {stats?.hasUpstreamKey ? '上游 Key 已配置' : '缺少 KIMI_API_KEY'}
+            {stats?.hasUpstreamKey ? '上游 Key 已配置' : '缺少 CODING_PLAN_API_KEY'}
           </div>
         </header>
 
@@ -716,7 +716,7 @@ function UserApp({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
             <ShieldCheck size={22} />
           </div>
           <div className="sidebar-brand-text">
-            <strong>kimi-codingplan-cosub</strong>
+            <strong>coding-plan-proxy</strong>
             <span>用户面板</span>
           </div>
           <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? '展开' : '收起'}>
@@ -979,7 +979,7 @@ function OfficialUsagePanel({
         </button>
       </div>
       {!officialUsage ? (
-        <p className="muted-text">尚未刷新。该功能默认关闭，需在设置页启用后才会请求 Kimi Code `/coding/v1/usages`。</p>
+        <p className="muted-text">尚未刷新。该功能默认关闭，需在设置页启用后才会请求官方 usage 接口。</p>
       ) : ok ? (
         <div className="official-grid">
           <OfficialQuotaCard title="5h 会话窗口" quota={officialUsage.session} />
@@ -992,14 +992,14 @@ function OfficialUsagePanel({
           <article className="official-card compact">
             <span>上次刷新</span>
             <strong>{fmtDate(officialUsage.fetchedAt)}</strong>
-            <small>{officialUsage.userAgent || 'KimiThinProxy/0.1 quota-check'}</small>
+            <small>{officialUsage.userAgent || 'CodingPlanProxy/0.1 quota-check'}</small>
           </article>
         </div>
       ) : (
         <div className="official-error">
           <strong>官方额度刷新失败</strong>
           <span>{officialUsage.error || `HTTP ${officialUsage.status || 0}`}</span>
-          <small>当前不会伪装成 Kimi CLI；如果官方拒绝该 UA，会保留失败状态供你判断。</small>
+          <small>当前不会伪装成官方客户端；如果官方拒绝该 UA，会保留失败状态供你判断。</small>
         </div>
       )}
     </section>
@@ -1112,7 +1112,7 @@ function KeysPage(props: {
   return (
     <section className="stack">
       <div className="toolbar">
-        <p>每个人一个 proxy key。真实 Kimi Key 只留在服务器环境变量里。</p>
+        <p>每个人一个 proxy key。真实上游 Key 只留在服务器环境变量里。</p>
         <button className="primary-button" onClick={props.openCreateKeyForm}>
           <Plus size={16} />
           新建 Key
@@ -1364,7 +1364,7 @@ function SettingsPage({
           <span>上游 Key 只从服务端环境变量读取，不在面板里展示。</span>
         </div>
         <label>
-          Kimi 上游 Base URL
+          上游 Base URL
           <input
             value={settings.upstreamBaseUrl}
             onChange={(event) => setSettings({ ...settings, upstreamBaseUrl: event.target.value })}
@@ -1390,7 +1390,7 @@ function SettingsPage({
         </div>
         <div className="panel-heading compact-heading">
           <h2>官方额度检查</h2>
-          <span>使用服务端 KIMI_API_KEY 请求 `/coding/v1/usages`。</span>
+          <span>使用服务端 CODING_PLAN_API_KEY 请求官方 usage 接口。</span>
         </div>
         <label className="checkbox-row">
           <input
@@ -1438,7 +1438,7 @@ function SettingsPage({
           </button>
         </div>
         <p className="muted-text">
-          当前身份：{settings.quotaCheckUserAgent || 'KimiThinProxy/0.1 quota-check'}。
+          当前身份：{settings.quotaCheckUserAgent || 'CodingPlanProxy/0.1 quota-check'}。
           {settings.quotaCheckIntervalMinutes > 0
             ? `定时刷新每 ${settings.quotaCheckIntervalMinutes} 分钟一次。`
             : '定时刷新已禁用，仅通过手动刷新和 429 被动触发查询官方额度。'}

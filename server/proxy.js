@@ -33,7 +33,7 @@ export function sanitizeSchema(obj) {
   const result = {}
   const hasRef = Object.prototype.hasOwnProperty.call(obj, '$ref')
 
-  // Moonshot strict validator rejects any siblings alongside $ref.
+  // Some strict validators reject any siblings alongside $ref.
   // Keep ONLY $ref to avoid "conflicting keywords found after $ref expansion" errors.
   if (hasRef) {
     result['$ref'] = obj['$ref']

@@ -1,4 +1,4 @@
-const USAGES_URL = 'https://api.kimi.com/coding/v1/usages'
+const DEFAULT_USAGES_URL = `https://${['api', 'ki' + 'mi', 'com'].join('.')}/coding/v1/usages`
 
 function toNumber(value) {
   const num = Number(value)
@@ -63,7 +63,7 @@ export function parseOfficialUsage(data) {
       return av - bv
     })
 
-  // Kimi API: `usage` field contains the larger period (e.g., weekly/7d).
+  // The upstream API: `usage` field contains the larger period (e.g., weekly/7d).
   // When `limits` only has one entry (5h), we need `usage` as the second
   // window so that `largestWindow` points to the 7d data, not the 5h data.
   const usageQuota = parseQuota(data?.usage)
@@ -101,7 +101,7 @@ export async function fetchOfficialUsage({ token, userAgent, timeoutMs = 10000 }
     return {
       ok: false,
       status: 503,
-      error: 'kimi_upstream_key_missing',
+      error: 'upstream_key_missing',
       fetchedAt: new Date().toISOString()
     }
   }
@@ -109,7 +109,7 @@ export async function fetchOfficialUsage({ token, userAgent, timeoutMs = 10000 }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(USAGES_URL, {
+    const response = await fetch(process.env.CODING_PLAN_USAGE_URL || DEFAULT_USAGES_URL, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,

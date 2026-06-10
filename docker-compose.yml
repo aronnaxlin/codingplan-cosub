@@ -7,11 +7,12 @@ services:
       - PORT=8787
       - ADMIN_TOKEN=${ADMIN_TOKEN:-change-this-admin-token}
       - JWT_SECRET=${JWT_SECRET:-change-me-secret}
-      - KIMI_API_KEY=${KIMI_API_KEY}
-      - KIMI_UPSTREAM_BASE_URL=${KIMI_UPSTREAM_BASE_URL:-https://api.kimi.com/coding/v1}
+      - CODING_PLAN_API_KEY=${CODING_PLAN_API_KEY}
+      - CODING_PLAN_UPSTREAM_BASE_URL=${CODING_PLAN_UPSTREAM_BASE_URL:-https://provider.example/coding/v1}
+      - CODING_PLAN_USAGE_URL=${CODING_PLAN_USAGE_URL:-https://provider.example/coding/v1/usages}
       - GLOBAL_CONCURRENCY_LIMIT=${GLOBAL_CONCURRENCY_LIMIT:-2}
       - DATA_FILE=./data/store.json
-      - KIMI_QUOTA_USER_AGENT=${KIMI_QUOTA_USER_AGENT:-KimiThinProxy/0.1 quota-check}
+      - CODING_PLAN_QUOTA_USER_AGENT=${CODING_PLAN_QUOTA_USER_AGENT:-CodingPlanProxy/0.1 quota-check}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
