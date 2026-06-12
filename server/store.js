@@ -288,8 +288,17 @@ export class Store {
       const resetAt = new Date(officialWindow.resetTime).getTime()
       if (Number.isFinite(resetAt)) {
         if (Date.now() >= resetAt + RESET_GRACE_MS) return resetAt
+        if (officialWindow?.cycleStartTime) {
+          const cycleStartAt = new Date(officialWindow.cycleStartTime).getTime()
+          if (Number.isFinite(cycleStartAt)) return cycleStartAt
+        }
         return resetAt - windowDef.ms
       }
+    }
+
+    if (this.data.settings.quotaCheckEnabled && officialWindow?.cycleStartTime) {
+      const cycleStartAt = new Date(officialWindow.cycleStartTime).getTime()
+      if (Number.isFinite(cycleStartAt)) return cycleStartAt
     }
 
     return Date.now() - windowDef.ms
@@ -370,8 +379,7 @@ export class Store {
     if (!key) return null
 
     const baseQuota = this.quotaLimitsForKey(key)
-    const report = this.usageReport(key)
-    const stats = report.usage
+    const stats = this.usageStats(key.id, official)
 
     const makeWindow = (windowName, officialWindow, baseReqLimit, baseTokenLimit) => {
       // --- Request limit: no official data, use static preset ---
@@ -507,6 +515,42 @@ export class Store {
     }
   }
 
+  preserveOrDetectOfficialReset(result, windowName) {
+    const currentWindow = this.officialWindowForName(result, windowName)
+    if (!currentWindow) return
+
+    const previousWindow = this.officialWindowForName(this.data.officialUsage, windowName)
+    const previousCycleStart = previousWindow?.cycleStartTime || null
+    const currentResetTime = currentWindow.resetTime || null
+    const previousResetTime = previousWindow?.resetTime || null
+    const currentResetAt = currentResetTime ? new Date(currentResetTime).getTime() : null
+    const fetchedAt = result.fetchedAt ? new Date(result.fetchedAt).getTime() : Date.now()
+    const officialCycleHasRolled = Number.isFinite(currentResetAt) && fetchedAt >= currentResetAt + RESET_GRACE_MS
+
+    if (previousCycleStart && currentResetTime && currentResetTime === previousResetTime) {
+      if (!officialCycleHasRolled) currentWindow.cycleStartTime = previousCycleStart
+      return
+    }
+
+    if (currentResetTime && previousResetTime && currentResetTime !== previousResetTime) return
+
+    const currentUsed = this.officialUsedFraction(currentWindow)
+    if (currentUsed !== 0) return
+
+    const previousUsed = this.officialUsedFraction(previousWindow)
+    const officialCounterDropped = previousUsed != null && previousUsed > 0
+    const defaultCutoff = this.cutoffForWindow(windowName, result)
+    const hasLocalUsageInDefaultWindow = this.data.keys.some((key) =>
+      this.usageForKeySince(key.id, defaultCutoff).some((item) =>
+        Number(item.totalTokens || 0) > 0 || Number(item.inputTokens || 0) > 0 || Number(item.outputTokens || 0) > 0
+      )
+    )
+
+    if (officialCounterDropped || hasLocalUsageInDefaultWindow) {
+      currentWindow.cycleStartTime = result.fetchedAt || nowIso()
+    }
+  }
+
   async recordUsage(entry) {
     this.data.usage.unshift({
       id: crypto.randomUUID(),
@@ -530,6 +574,7 @@ export class Store {
     // Local usage changes after this point only affect the numerator, not the denominator.
     if (result.ok) {
       for (const windowName of Object.keys(WINDOW_DEFS)) {
+        this.preserveOrDetectOfficialReset(result, windowName)
         const officialWindow = this.officialWindowForName(result, windowName)
         const inference = this.buildQuotaInference(windowName, officialWindow, result)
         if (officialWindow && inference) {

@@ -20,6 +20,7 @@ const gate = new ConcurrencyGate()
 let lastOfficialAutoRefreshAt = 0
 let nextAllowedRefreshAt = 0
 const MIN_REFRESH_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes minimum between refreshes
+const RESET_REFRESH_GRACE_MS = 60 * 1000
 
 await store.load()
 
@@ -89,21 +90,23 @@ function computeRefreshInfo(official) {
       )
     : 100
 
-  // If auto-refresh is disabled, show manual/passive mode
-  if (intervalMinutes <= 0) {
-    return {
-      nextRefreshInSeconds: null,
-      intervalMinutes: 0,
-      reason: 'manual_only',
-      minRemainingPercent
-    }
-  }
-
   if (!official || !official.ok) {
     return { nextRefreshInSeconds: null, intervalMinutes, reason: 'no_data', minRemainingPercent }
   }
 
   const now = Date.now()
+  const nextResetRefreshAt = nextOfficialResetRefreshAt(official)
+
+  // If polling is disabled, still show the official reset timer.
+  if (intervalMinutes <= 0) {
+    return {
+      nextRefreshInSeconds: nextResetRefreshAt ? Math.max(0, Math.floor((nextResetRefreshAt - now) / 1000)) : null,
+      intervalMinutes: 0,
+      reason: nextResetRefreshAt ? 'official_reset_timer' : 'manual_only',
+      minRemainingPercent
+    }
+  }
+
   const minInterval = 5 * 60 * 1000
   let intervalMs = intervalMinutes * 60 * 1000
   let reason = 'healthy'
@@ -120,7 +123,8 @@ function computeRefreshInfo(official) {
     }
   }
 
-  const nextRefreshAt = lastOfficialAutoRefreshAt + intervalMs
+  const intervalRefreshAt = lastOfficialAutoRefreshAt + intervalMs
+  const nextRefreshAt = nextResetRefreshAt ? Math.min(intervalRefreshAt, nextResetRefreshAt) : intervalRefreshAt
   const nextRefreshInSeconds = Math.max(0, Math.floor((nextRefreshAt - now) / 1000))
 
   return {
@@ -129,6 +133,33 @@ function computeRefreshInfo(official) {
     reason,
     minRemainingPercent
   }
+}
+
+function officialWindows(official) {
+  return [official?.session, official?.largestWindow, official?.weekly].filter(Boolean)
+}
+
+function nextOfficialResetRefreshAt(official) {
+  const now = Date.now()
+  const candidates = officialWindows(official)
+    .map((w) => {
+      const resetAt = w.resetTime ? new Date(w.resetTime).getTime() : NaN
+      return Number.isFinite(resetAt) ? resetAt + RESET_REFRESH_GRACE_MS : null
+    })
+    .filter((value) => value !== null && value >= now)
+  return candidates.length ? Math.min(...candidates) : null
+}
+
+function officialResetRefreshDue(official) {
+  if (!official?.ok) return false
+  const fetchedAt = official.fetchedAt ? new Date(official.fetchedAt).getTime() : 0
+  const now = Date.now()
+  return officialWindows(official).some((w) => {
+    const resetAt = w.resetTime ? new Date(w.resetTime).getTime() : NaN
+    if (!Number.isFinite(resetAt)) return false
+    const refreshAt = resetAt + RESET_REFRESH_GRACE_MS
+    return now >= refreshAt && fetchedAt < refreshAt
+  })
 }
 
 async function refreshOfficialUsage() {
@@ -591,25 +622,18 @@ setInterval(() => {
   if (!store.data.settings.quotaCheckEnabled) return
 
   const intervalMinutes = store.data.settings.quotaCheckIntervalMinutes || 0
-  if (intervalMinutes <= 0) return // Auto-refresh disabled; rely on manual + 429 triggers
-
   const now = Date.now()
 
   // SPECIAL: If any window has just reset, force refresh after a 1 minute grace
   // period so the local cycle follows the official reset without racing it.
   const official = store.data.officialUsage
-  const anyWindowJustReset =
-    official?.ok &&
-    [official.session, official.largestWindow, official.weekly]
-      .filter(Boolean)
-      .some((w) => {
-        if (!w.resetTime) return false
-        return Date.now() >= new Date(w.resetTime).getTime() + 60 * 1000
-      })
+  const anyWindowJustReset = officialResetRefreshDue(official)
+
+  if (intervalMinutes <= 0 && !anyWindowJustReset) return
 
   if (!anyWindowJustReset && now < nextAllowedRefreshAt) return
 
-  const intervalMs = intervalMinutes * 60 * 1000
+  const intervalMs = intervalMinutes > 0 ? intervalMinutes * 60 * 1000 : null
   if (!anyWindowJustReset && now - lastOfficialAutoRefreshAt < intervalMs) return
 
   if (anyWindowJustReset) {
@@ -620,8 +644,9 @@ setInterval(() => {
   refreshOfficialUsage().catch((error) => {
     console.warn(`official usage refresh failed: ${error.message}`)
     // Backoff on failure: push last refresh time back so next retry waits longer
-    const backoffMs = Math.min(intervalMs * 2, 4 * 60 * 60 * 1000)
-    lastOfficialAutoRefreshAt = now - intervalMs + backoffMs
+    const baseBackoffMs = intervalMs || MIN_REFRESH_INTERVAL_MS
+    const backoffMs = Math.min(baseBackoffMs * 2, 4 * 60 * 60 * 1000)
+    lastOfficialAutoRefreshAt = now - baseBackoffMs + backoffMs
   })
 }, 60 * 1000)
 
