@@ -70,6 +70,41 @@ export function sanitizeSchema(obj) {
   return result
 }
 
+function sanitizeContentValue(value) {
+  if (Array.isArray(value)) return value.map(sanitizeContentBlock)
+  return value
+}
+
+function sanitizeContentBlock(block) {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return block
+
+  if (block.type === 'tool_reference') {
+    const toolName = typeof block.tool_name === 'string' ? block.tool_name : 'deferred tool'
+    return {
+      type: 'text',
+      text: `Tool reference available: ${toolName}`
+    }
+  }
+
+  const next = { ...block }
+  if (Object.prototype.hasOwnProperty.call(next, 'content')) {
+    next.content = sanitizeContentValue(next.content)
+  }
+  return next
+}
+
+export function sanitizeMessages(messages) {
+  if (!Array.isArray(messages)) return messages
+  return messages.map((message) => {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return message
+    if (!Object.prototype.hasOwnProperty.call(message, 'content')) return message
+    return {
+      ...message,
+      content: sanitizeContentValue(message.content)
+    }
+  })
+}
+
 export function upstreamUrl(baseUrl, req) {
   // Some clients (Anthropic SDK with base URL ending in /v1) send /v1/v1/messages.
   // Normalize both /v1/messages and /v1/v1/messages to the same upstream path.

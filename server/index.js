@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
 import { ConcurrencyGate, checkRollingLimits, checkOfficialLimits } from './limits.js'
-import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, sanitizeSchema, upstreamUrl } from './proxy.js'
+import { buildForwardHeaders, estimateTokens, extractBearer, pickModel, pipeUpstreamResponse, sanitizeMessages, sanitizeSchema, upstreamUrl } from './proxy.js'
 import { fetchOfficialUsage } from './officialUsage.js'
 import { hashPassword, verifyPassword, createToken, requireAuth, requireAdmin } from './auth.js'
 
@@ -411,6 +411,8 @@ app.all('/v1/*', async (req, res) => {
   let outputTokens = 0
   let totalTokens = 0
   let errorCode = ''
+  let forwardBody = req.body
+  const normalizedPath = req.path.replace(/^(\/v1)+\/?/, '/v1/')
 
   if (!key || !key.active) {
     res.status(401).json({ error: key ? 'proxy_key_disabled' : 'proxy_key_invalid' })
@@ -426,8 +428,11 @@ app.all('/v1/*', async (req, res) => {
       // The Anthropic-compatible endpoint may not recognize the provider-native model alias.
       // Only apply this mapping for the Anthropic /v1/messages path; the OpenAI
       // /v1/chat/completions endpoint may expect the native model alias.
-      if (requestBody && requestBody.model === PROVIDER_MODEL_ALIAS && req.path.startsWith('/v1/messages')) {
+      if (requestBody && requestBody.model === PROVIDER_MODEL_ALIAS && normalizedPath.startsWith('/v1/messages')) {
         requestBody.model = 'claude-sonnet-4-6'
+      }
+      if (requestBody && normalizedPath.startsWith('/v1/messages')) {
+        requestBody.messages = sanitizeMessages(requestBody.messages)
       }
       // Strip conflicting keywords alongside $ref in tool schemas for strict upstream validators.
       if (requestBody && Array.isArray(requestBody.tools)) {
@@ -443,6 +448,7 @@ app.all('/v1/*', async (req, res) => {
         }
       }
       requestText = JSON.stringify(requestBody)
+      forwardBody = Buffer.from(requestText, 'utf8')
     }
   } catch {
     requestBody = null
@@ -547,7 +553,7 @@ app.all('/v1/*', async (req, res) => {
     const upstreamResponse = await fetch(target, {
       method: req.method,
       headers: buildForwardHeaders(req, upstreamKey),
-      body: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : forwardBody
     })
     status = upstreamResponse.status
     const contentType = upstreamResponse.headers.get('content-type') || ''
