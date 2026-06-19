@@ -313,7 +313,7 @@ export class Store {
     const week = this.usageForKeySince(keyId, this.cutoffForWindow('week', official))
     const summarize = (items) => ({
       requests: items.length,
-      tokens: items.reduce((sum, item) => sum + Number(item.totalTokens || 0), 0),
+      tokens: items.filter((item) => item.status < 400).reduce((sum, item) => sum + Number(item.totalTokens || 0), 0),
       errors: items.filter((item) => item.status >= 400).length
     })
     return { fiveHours: summarize(fiveHours), week: summarize(week) }
@@ -444,6 +444,7 @@ export class Store {
     const cutoff = this.cutoffForWindow(windowName, official)
     return this.data.keys.reduce((sum, key) => {
       const tokens = this.usageForKeySince(key.id, cutoff)
+        .filter((item) => item.status < 400)
         .reduce((inner, item) => inner + Number(item.totalTokens || 0), 0)
       return sum + tokens
     }, 0)
@@ -477,7 +478,7 @@ export class Store {
     }
 
     const minPlausible = baseLimit * 0.5
-    const maxPlausible = baseLimit * 1.5
+    const maxPlausible = baseLimit * 4.0
     const inferredIsPlausible = inferredTotal !== null && inferredTotal >= minPlausible && inferredTotal <= maxPlausible
 
     if (inferredIsPlausible) {
