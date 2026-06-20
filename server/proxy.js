@@ -119,10 +119,15 @@ export function buildForwardHeaders(req, upstreamKey) {
     const lower = name.toLowerCase()
     if (HOP_BY_HOP.has(lower)) continue
     if (lower === 'authorization') continue
+    // Do not forward the client's Accept-Encoding. We want the upstream to
+    // return an uncompressed response so we can safely pipe it through without
+    // the Content-Encoding header and body getting out of sync.
+    if (lower === 'accept-encoding') continue
     if (Array.isArray(value)) headers[name] = value.join(', ')
     else if (value != null) headers[name] = String(value)
   }
   headers.authorization = `Bearer ${upstreamKey}`
+  headers['accept-encoding'] = 'identity'
   if (req.headers['user-agent']) {
     headers['user-agent'] = String(req.headers['user-agent'])
   }
@@ -133,6 +138,10 @@ export async function pipeUpstreamResponse(upstreamResponse, res, onChunk) {
   res.status(upstreamResponse.status)
   upstreamResponse.headers.forEach((value, name) => {
     const lower = name.toLowerCase()
+    // We request identity encoding from the upstream, but some gateways still
+    // send a stale Content-Encoding header. Never forward it: the body we pipe
+    // to the client is always uncompressed.
+    if (lower === 'content-encoding') return
     if (!HOP_BY_HOP.has(lower)) res.setHeader(name, value)
   })
   if (!upstreamResponse.body) {
