@@ -49,9 +49,9 @@ export function checkRollingLimits(store, key, projectedTokens = 0) {
   const fiveHourTokenLimit = dynamicLimits?.fiveHours?.tokenDynamicLimit || limits.fiveHours.tokens
   const weeklyTokenLimit = dynamicLimits?.week?.tokenDynamicLimit || limits.week.tokens
   const tokenProjection = Math.max(0, Number(projectedTokens || 0))
+  // Request counts are still recorded in `stats` for reporting, but they are NOT
+  // used as a limiting condition. Only reaching the token total triggers a 429.
   const checks = [
-    ['five_hour_request_limit', stats.fiveHours.requests, limits.fiveHours.requests],
-    ['weekly_request_limit', stats.week.requests, limits.week.requests],
     ['five_hour_token_limit', stats.fiveHours.tokens + tokenProjection, fiveHourTokenLimit],
     ['weekly_token_limit', stats.week.tokens + tokenProjection, weeklyTokenLimit]
   ]
